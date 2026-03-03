@@ -45,8 +45,13 @@ playgroundApp.get("/playground", (c) => {
           header h1 span {
             color: #00e5a8;
           }
-          .status {
+          .header-right {
             margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+          }
+          .status {
             font-size: 12px;
             display: flex;
             align-items: center;
@@ -98,7 +103,11 @@ playgroundApp.get("/playground", (c) => {
             font-size: 10px;
             padding: 1px 6px;
             border-radius: 8px;
+          }
+          .panel-actions {
             margin-left: auto;
+            display: flex;
+            gap: 6px;
           }
 
           .messages {
@@ -276,6 +285,7 @@ playgroundApp.get("/playground", (c) => {
             color: #ef4444;
           }
           .badge-connected,
+          .badge-chat_info,
           .badge-log {
             background: #1f2630;
             color: #64748b;
@@ -285,7 +295,7 @@ playgroundApp.get("/playground", (c) => {
             color: #ef4444;
           }
 
-          .clear-btn {
+          .small-btn {
             background: none;
             border: 1px solid #1f2630;
             color: #64748b;
@@ -293,11 +303,92 @@ playgroundApp.get("/playground", (c) => {
             padding: 2px 8px;
             border-radius: 4px;
             cursor: pointer;
-            margin-left: auto;
           }
-          .clear-btn:hover {
+          .small-btn:hover {
             border-color: #3a4555;
             color: #e2e8f0;
+          }
+
+          /* Status footer */
+          footer {
+            padding: 8px 20px;
+            border-top: 1px solid #1f2630;
+            background: #11161c;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            font-family: "JetBrains Mono", monospace;
+            font-size: 11px;
+            color: #64748b;
+          }
+          .footer-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+          }
+          .footer-label {
+            color: #3a4555;
+            text-transform: uppercase;
+            font-size: 9px;
+            letter-spacing: 0.5px;
+          }
+          .footer-value {
+            color: #94a3b8;
+          }
+          .footer-value.active {
+            color: #00e5a8;
+          }
+          .footer-value.warn {
+            color: #f59e0b;
+          }
+          .footer-value.error {
+            color: #ef4444;
+          }
+
+          /* Context meter */
+          .context-meter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+          .meter-bar {
+            width: 100px;
+            height: 6px;
+            background: #1f2630;
+            border-radius: 3px;
+            overflow: hidden;
+          }
+          .meter-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: #00e5a8;
+            transition: width 0.3s ease, background 0.3s ease;
+          }
+          .meter-fill.warn {
+            background: #f59e0b;
+          }
+          .meter-fill.danger {
+            background: #ef4444;
+          }
+
+          /* Model pills */
+          .model-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 1px 6px;
+            border-radius: 4px;
+            background: #1f2630;
+            font-size: 10px;
+          }
+          .model-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: #3a4555;
+          }
+          .model-dot.loaded {
+            background: #00e5a8;
           }
         </style>
         <link
@@ -308,15 +399,23 @@ playgroundApp.get("/playground", (c) => {
       <body>
         <header>
           <h1>DOBA <span>Playground</span></h1>
-          <div class="status">
-            <div class="status-dot" id="statusDot"></div>
-            <span id="statusText">Disconnected</span>
+          <div class="header-right">
+            <div class="status">
+              <div class="status-dot" id="statusDot"></div>
+              <span id="statusText">Disconnected</span>
+            </div>
           </div>
         </header>
 
         <main>
           <div class="panel">
-            <div class="panel-header">Chat</div>
+            <div class="panel-header">
+              Chat
+              <span class="count" id="chatInfo">no chat</span>
+              <div class="panel-actions">
+                <button class="small-btn" id="newChatBtn" title="Start new chat">New Chat</button>
+              </div>
+            </div>
             <div class="messages" id="chat"></div>
             <div class="input-bar">
               <input
@@ -334,11 +433,35 @@ playgroundApp.get("/playground", (c) => {
             <div class="panel-header">
               Event Bus
               <span class="count" id="eventCount">0</span>
-              <button class="clear-btn" id="clearEvents">Clear</button>
+              <div class="panel-actions">
+                <button class="small-btn" id="clearEvents">Clear</button>
+              </div>
             </div>
             <div class="messages" id="events"></div>
           </div>
         </main>
+
+        <footer>
+          <div class="footer-group">
+            <span class="footer-label">Models</span>
+            <span id="modelStatus">loading...</span>
+          </div>
+          <div class="footer-group context-meter">
+            <span class="footer-label">Context</span>
+            <div class="meter-bar">
+              <div class="meter-fill" id="meterFill" style="width: 0%"></div>
+            </div>
+            <span class="footer-value" id="contextText">--</span>
+          </div>
+          <div class="footer-group">
+            <span class="footer-label">Tokens</span>
+            <span class="footer-value" id="tokenText">in: -- out: --</span>
+          </div>
+          <div class="footer-group">
+            <span class="footer-label">Mode</span>
+            <span class="footer-value" id="modeText">--</span>
+          </div>
+        </footer>
 
         <script>
           const chat = document.getElementById("chat");
@@ -349,10 +472,22 @@ playgroundApp.get("/playground", (c) => {
           const statusText = document.getElementById("statusText");
           const eventCount = document.getElementById("eventCount");
           const clearEvents = document.getElementById("clearEvents");
+          const newChatBtn = document.getElementById("newChatBtn");
+          const chatInfo = document.getElementById("chatInfo");
+          const modelStatus = document.getElementById("modelStatus");
+          const meterFill = document.getElementById("meterFill");
+          const contextText = document.getElementById("contextText");
+          const tokenText = document.getElementById("tokenText");
+          const modeText = document.getElementById("modeText");
 
           let ws;
           let evtCount = 0;
           let busy = false;
+          let currentChatId = null;
+          let messageCount = 0;
+          let cumulativeInput = 0;
+          let cumulativeOutput = 0;
+          const CONTEXT_WINDOW = 32768;
 
           function connect() {
             const protocol =
@@ -369,7 +504,7 @@ playgroundApp.get("/playground", (c) => {
 
             ws.onclose = () => {
               statusDot.classList.remove("connected");
-              statusText.textContent = "Disconnected — reconnecting...";
+              statusText.textContent = "Reconnecting...";
               input.disabled = true;
               sendBtn.disabled = true;
               setTimeout(connect, 2000);
@@ -380,41 +515,72 @@ playgroundApp.get("/playground", (c) => {
             ws.onmessage = (e) => {
               const data = JSON.parse(e.data);
               addEvent(data);
-
-              if (data.type === "connected") {
-                addChat("system", data.data.message);
-              } else               if (data.type === "orchestra_end" && data.data?.final_answer) {
-                const answer = data.data.final_answer;
-                var thinkRe = new RegExp("<think>([\\\\s\\\\S]*?)</think>");
-                var stripRe = new RegExp("<think>[\\\\s\\\\S]*?</think>\\\\s*", "g");
-                var thinkMatch = answer.match(thinkRe);
-                var cleanAnswer = answer.replace(stripRe, "").trim();
-                if (thinkMatch) {
-                  addChat("thinking", thinkMatch[1].trim());
-                }
-                if (cleanAnswer) {
-                  addChat("assistant", cleanAnswer);
-                }
-                setBusy(false);
-              } else if (data.type === "error") {
-                addChat(
-                  "system",
-                  "Error: " + (data.data?.error || "Unknown error")
-                );
-                setBusy(false);
-              }
+              handleEvent(data);
             };
           }
 
+          function handleEvent(data) {
+            if (data.type === "chat_info" && data.data?.chat_id) {
+              currentChatId = data.data.chat_id;
+              chatInfo.textContent = "chat #" + currentChatId;
+            } else if (data.type === "connected") {
+              addChat("system", data.data.message);
+            } else if (data.type === "task_generation_end" && data.data?.mode) {
+              modeText.textContent = data.data.mode;
+              if (data.data.mode === "direct") modeText.className = "footer-value";
+              else if (data.data.mode === "single") modeText.className = "footer-value active";
+              else modeText.className = "footer-value warn";
+            } else if (data.type === "orchestra_end" && data.data?.final_answer) {
+              var answer = data.data.final_answer;
+              var thinkRe = new RegExp("<think>([\\\\s\\\\S]*?)</think>");
+              var stripRe = new RegExp("<think>[\\\\s\\\\S]*?</think>\\\\s*", "g");
+              var thinkMatch = answer.match(thinkRe);
+              var cleanAnswer = answer.replace(stripRe, "").trim();
+              if (thinkMatch) {
+                addChat("thinking", thinkMatch[1].trim());
+              }
+              if (cleanAnswer) {
+                addChat("assistant", cleanAnswer);
+              }
+              messageCount += 2;
+
+              if (data.data.usage) {
+                var u = data.data.usage;
+                var inp = u.input || 0;
+                var out = u.output || u.output || 0;
+                var total = u.totalTokens || (inp + out);
+                cumulativeInput += inp;
+                cumulativeOutput += out;
+                tokenText.textContent = "in: " + cumulativeInput.toLocaleString() + "  out: " + cumulativeOutput.toLocaleString();
+                updateContextMeter(inp);
+              }
+
+              setBusy(false);
+            } else if (data.type === "error") {
+              addChat(
+                "system",
+                "Error: " + (data.data?.error || "Unknown error")
+              );
+              setBusy(false);
+            }
+          }
+
+          function updateContextMeter(lastInput) {
+            var pct = Math.min(100, Math.round((lastInput / CONTEXT_WINDOW) * 100));
+            meterFill.style.width = pct + "%";
+            meterFill.className = "meter-fill" + (pct > 70 ? " danger" : pct > 50 ? " warn" : "");
+            contextText.textContent = lastInput.toLocaleString() + " / " + CONTEXT_WINDOW.toLocaleString() + " (" + pct + "%)";
+            contextText.className = "footer-value" + (pct > 70 ? " error" : pct > 50 ? " warn" : "");
+          }
+
           function addChat(role, text) {
-            const div = document.createElement("div");
+            var div = document.createElement("div");
             div.className = "msg " + role;
-            const label = document.createElement("div");
+            var label = document.createElement("div");
             label.className = "label";
-            label.textContent =
-              role === "thinking" ? "thinking" : role;
+            label.textContent = role === "thinking" ? "thinking" : role;
             div.appendChild(label);
-            const content = document.createElement("div");
+            var content = document.createElement("div");
             content.textContent = text;
             div.appendChild(content);
             chat.appendChild(div);
@@ -424,46 +590,48 @@ playgroundApp.get("/playground", (c) => {
           function addEvent(data) {
             evtCount++;
             eventCount.textContent = evtCount;
-            const div = document.createElement("div");
+            var div = document.createElement("div");
             div.className = "event-item";
 
-            const time = document.createElement("span");
+            var time = document.createElement("span");
             time.className = "event-time";
-            const d = new Date(data.timestamp);
+            var d = new Date(data.timestamp);
             time.textContent =
               d.toLocaleTimeString("en-US", { hour12: false }) +
               "." +
               String(d.getMilliseconds()).padStart(3, "0");
             div.appendChild(time);
 
-            const badge = document.createElement("span");
+            var badge = document.createElement("span");
             badge.className = "event-badge badge-" + data.type;
             badge.textContent = data.type;
             div.appendChild(badge);
 
-            const detail = document.createElement("span");
+            var detail = document.createElement("span");
             detail.className = "event-data";
-            const parts = [];
+            var parts = [];
             if (data.source && data.source !== "orchestra")
               parts.push(data.source);
             if (data.data) {
-              const d = data.data;
-              if (d.tool) parts.push(d.tool);
-              if (d.query)
+              var dd = data.data;
+              if (dd.tool) parts.push(dd.tool);
+              if (dd.query)
                 parts.push(
                   '"' +
-                    (d.query.length > 60
-                      ? d.query.slice(0, 60) + "..."
-                      : d.query) +
+                    (dd.query.length > 60
+                      ? dd.query.slice(0, 60) + "..."
+                      : dd.query) +
                     '"'
                 );
-              if (d.agent) parts.push(d.agent);
-              if (d.error) parts.push("ERR: " + d.error);
-              if (d.message) parts.push(d.message);
-              if (d.final_answer) {
+              if (dd.agent) parts.push(dd.agent);
+              if (dd.mode) parts.push("mode:" + dd.mode);
+              if (dd.error) parts.push("ERR: " + dd.error);
+              if (dd.message) parts.push(dd.message);
+              if (dd.usage) parts.push("tokens:" + (dd.usage.totalTokens || "?"));
+              if (dd.final_answer) {
                 var sr = new RegExp("<think>[\\\\s\\\\S]*?</think>\\\\s*", "g");
-                var cleaned = d.final_answer.replace(sr, "");
-                parts.push(cleaned.length > 80 ? cleaned.slice(0, 80) + "..." : cleaned);
+                var cleaned = dd.final_answer.replace(sr, "");
+                parts.push(cleaned.length > 60 ? cleaned.slice(0, 60) + "..." : cleaned);
               }
             }
             detail.textContent = parts.join(" · ");
@@ -481,25 +649,67 @@ playgroundApp.get("/playground", (c) => {
           }
 
           function send() {
-            const text = input.value.trim();
+            var text = input.value.trim();
             if (!text || busy) return;
             addChat("user", text);
-            ws.send(JSON.stringify({ message: text }));
+            var payload = { message: text };
+            if (currentChatId) payload.chat_id = currentChatId;
+            ws.send(JSON.stringify(payload));
             input.value = "";
             setBusy(true);
           }
 
-          input.addEventListener("keydown", (e) => {
+          function newChat() {
+            currentChatId = null;
+            messageCount = 0;
+            cumulativeInput = 0;
+            cumulativeOutput = 0;
+            chat.innerHTML = "";
+            chatInfo.textContent = "no chat";
+            tokenText.textContent = "in: --  out: --";
+            contextText.textContent = "--";
+            meterFill.style.width = "0%";
+            meterFill.className = "meter-fill";
+            contextText.className = "footer-value";
+            modeText.textContent = "--";
+            modeText.className = "footer-value";
+            addChat("system", "New conversation started.");
+            input.focus();
+          }
+
+          async function fetchModels() {
+            try {
+              var res = await fetch("/v1/ollama/stats");
+              var data = await res.json();
+              if (data.models && data.models.length > 0) {
+                modelStatus.innerHTML = data.models.map(function(m) {
+                  var name = m.name || m.model || "?";
+                  var short = name.split(":")[0];
+                  var sizeGB = m.size_vram ? (m.size_vram / 1e9).toFixed(1) + "G" : "";
+                  return '<span class="model-pill"><span class="model-dot loaded"></span>' + short + (sizeGB ? " " + sizeGB : "") + '</span>';
+                }).join(" ");
+              } else {
+                modelStatus.innerHTML = '<span style="color:#ef4444">no models loaded</span>';
+              }
+            } catch {
+              modelStatus.innerHTML = '<span style="color:#ef4444">ollama unreachable</span>';
+            }
+          }
+
+          input.addEventListener("keydown", function(e) {
             if (e.key === "Enter") send();
           });
           sendBtn.addEventListener("click", send);
-          clearEvents.addEventListener("click", () => {
+          clearEvents.addEventListener("click", function() {
             events.innerHTML = "";
             evtCount = 0;
             eventCount.textContent = "0";
           });
+          newChatBtn.addEventListener("click", newChat);
 
           connect();
+          fetchModels();
+          setInterval(fetchModels, 15000);
         </script>
       </body>
     </html>`);
