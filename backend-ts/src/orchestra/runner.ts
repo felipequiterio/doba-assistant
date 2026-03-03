@@ -2,6 +2,7 @@ import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { agentRegistry } from "../agents/registry";
 import { eventBus, EventType } from "./events";
 import type { PlanStep } from "./router";
+import { ToolCache } from "./tool-cache";
 
 export interface StepResult {
   stepIndex: number;
@@ -60,7 +61,8 @@ function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
 
 async function executeStep(
   step: PlanStep,
-  stepIndex: number
+  stepIndex: number,
+  cache: ToolCache
 ): Promise<StepResult> {
   const definition = agentRegistry.get(step.agent_name);
   if (!definition) {
@@ -81,7 +83,7 @@ async function executeStep(
     expected_output: step.expected_output,
   });
 
-  const agent = definition.createAgent();
+  const agent = definition.createAgent(cache);
   const unsub = agent.subscribe((event: AgentEvent) => {
     bridgeAgentEvent(event, step.agent_name);
   });
@@ -130,46 +132,52 @@ async function executeStep(
  * Dispatches a list of plan steps to their respective agents.
  * Sequential steps run in order; steps with is_async=true are batched
  * and run in parallel via Promise.allSettled.
+ * A shared ToolCache avoids redundant DB reads for read-only tools
+ * across steps within the same plan execution.
  */
 export async function runPlan(steps: PlanStep[]): Promise<StepResult[]> {
+  const cache = new ToolCache();
   const results: StepResult[] = [];
   let i = 0;
 
-  while (i < steps.length) {
-    // Collect consecutive async steps into a batch
-    if (steps[i].is_async) {
-      const asyncBatch: { step: PlanStep; index: number }[] = [];
-      while (i < steps.length && steps[i].is_async) {
-        asyncBatch.push({ step: steps[i], index: i });
+  try {
+    while (i < steps.length) {
+      if (steps[i].is_async) {
+        const asyncBatch: { step: PlanStep; index: number }[] = [];
+        while (i < steps.length && steps[i].is_async) {
+          asyncBatch.push({ step: steps[i], index: i });
+          i++;
+        }
+
+        const settled = await Promise.allSettled(
+          asyncBatch.map(({ step, index }) => executeStep(step, index, cache))
+        );
+
+        for (const outcome of settled) {
+          if (outcome.status === "fulfilled") {
+            results.push(outcome.value);
+          } else {
+            const batch =
+              asyncBatch[results.length - (results.length - asyncBatch.length)];
+            results.push({
+              stepIndex: batch?.index ?? -1,
+              agentName: batch?.step.agent_name ?? "unknown",
+              task: batch?.step.task ?? "",
+              result: `Error: ${outcome.reason}`,
+              success: false,
+            });
+          }
+        }
+      } else {
+        const result = await executeStep(steps[i], i, cache);
+        results.push(result);
         i++;
       }
-
-      const settled = await Promise.allSettled(
-        asyncBatch.map(({ step, index }) => executeStep(step, index))
-      );
-
-      for (const outcome of settled) {
-        if (outcome.status === "fulfilled") {
-          results.push(outcome.value);
-        } else {
-          const batch = asyncBatch[results.length - (results.length - asyncBatch.length)];
-          results.push({
-            stepIndex: batch?.index ?? -1,
-            agentName: batch?.step.agent_name ?? "unknown",
-            task: batch?.step.task ?? "",
-            result: `Error: ${outcome.reason}`,
-            success: false,
-          });
-        }
-      }
-    } else {
-      const result = await executeStep(steps[i], i);
-      results.push(result);
-      i++;
     }
+  } finally {
+    cache.clear();
   }
 
-  // Sort by original step index to maintain order
   results.sort((a, b) => a.stepIndex - b.stepIndex);
   return results;
 }
