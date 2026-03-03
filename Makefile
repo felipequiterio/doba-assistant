@@ -1,3 +1,5 @@
+export PATH := $(HOME)/.bun/bin:$(PATH)
+
 .PHONY: help db db-stop db-reset dev build test lint migrate migrate-generate clean
 
 help: ## Show this help
