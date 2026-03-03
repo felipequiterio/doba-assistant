@@ -8,6 +8,8 @@ import { eventBus, EventType } from "./orchestra/events";
 import { preloadModels } from "./llm/preload";
 import { wsApp, chatsRestApp, websocket } from "./routes/chat";
 import todosApp from "./routes/todos";
+import notesApp from "./routes/notes";
+import ollamaApp from "./routes/ollama";
 import swaggerApp from "./routes/swagger";
 import playgroundApp from "./routes/playground";
 
@@ -40,6 +42,8 @@ app.get("/health", (c) =>
 app.route("/", wsApp);
 app.route("/v1/chats", chatsRestApp);
 app.route("/v1/todos", todosApp);
+app.route("/v1/notes", notesApp);
+app.route("/v1/ollama", ollamaApp);
 app.route("/", swaggerApp);
 app.route("/", playgroundApp);
 
