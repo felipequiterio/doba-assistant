@@ -6,6 +6,10 @@ import {
   updateNoteTool,
   deleteNoteTool,
 } from "../../tools/personal/notes-tools";
+import {
+  type ToolCache,
+  wrapToolsWithCache,
+} from "../../orchestra/tool-cache";
 
 const SYSTEM_PROMPT = `You are a notes management assistant. You help users create, list, update, and delete notes.
 
@@ -16,12 +20,13 @@ When the user asks to remove or delete a note, use the deleteNote tool.
 
 After executing a tool, provide a brief natural language confirmation of what you did.`;
 
-export function createNotesAgent(): Agent {
+export function createNotesAgent(cache?: ToolCache): Agent {
+  const tools = [createNoteTool, listNotesTool, updateNoteTool, deleteNoteTool];
   return new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
       model: WORKER_MODEL,
-      tools: [createNoteTool, listNotesTool, updateNoteTool, deleteNoteTool],
+      tools: cache ? wrapToolsWithCache(tools, cache) : tools,
       thinkingLevel: "off",
     },
     getApiKey: () => "ollama",
