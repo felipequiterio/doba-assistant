@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: doba-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: doba
+      POSTGRES_PASSWORD: doba
+      POSTGRES_DB: doba
+    volumes:
+      - doba_pgdata:/var/lib/postgresql/data
+
+volumes:
+  doba_pgdata:
