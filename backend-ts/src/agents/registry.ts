@@ -9,11 +9,12 @@ import {
   NOTES_AGENT_NAME,
   NOTES_AGENT_DESCRIPTION,
 } from "./personal/notes-agent";
+import type { ToolCache } from "../orchestra/tool-cache";
 
 export interface AgentDefinition {
   name: string;
   description: string;
-  createAgent: () => Agent;
+  createAgent: (cache?: ToolCache) => Agent;
 }
 
 export const agentRegistry = new Map<string, AgentDefinition>();
