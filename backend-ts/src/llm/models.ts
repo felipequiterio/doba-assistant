@@ -29,8 +29,8 @@ const ollamaThinkingCompat: OpenAICompletionsCompat = {
  * TODO: Switch to qwen3:4b once pulled for faster routing.
  */
 export const ROUTER_MODEL: Model<"openai-completions"> = {
-  id: "qwen3:8b",
-  name: "Qwen3 8B (Router)",
+  id: "qwen3.5:4b",
+  name: "Qwen3.5 4B (Router)",
   api: "openai-completions",
   provider: "ollama",
   baseUrl: OLLAMA_BASE_URL,
@@ -46,8 +46,8 @@ export const ROUTER_MODEL: Model<"openai-completions"> = {
  * Balanced quality/speed model for agent execution and tool use.
  */
 export const WORKER_MODEL: Model<"openai-completions"> = {
-  id: "qwen3:8b",
-  name: "Qwen3 8B (Worker)",
+  id: "qwen3.5:9b",
+  name: "Qwen3.5 9B (Worker)",
   api: "openai-completions",
   provider: "ollama",
   baseUrl: OLLAMA_BASE_URL,
@@ -64,8 +64,8 @@ export const WORKER_MODEL: Model<"openai-completions"> = {
  * Uses Qwen thinking format (enable_thinking: boolean).
  */
 export const THINKING_MODEL: Model<"openai-completions"> = {
-  id: "qwen3:8b",
-  name: "Qwen3 8B (Thinking)",
+  id: "qwen3.5:9b",
+  name: "Qwen3.5 9B (Thinking)",
   api: "openai-completions",
   provider: "ollama",
   baseUrl: OLLAMA_BASE_URL,
