@@ -3,8 +3,8 @@ import { createBunWebSocket } from "hono/bun";
 import type { ServerWebSocket } from "bun";
 import { db } from "../db/client";
 import { chats, messages, events as eventsTable } from "../db/schema";
-import { eq, desc } from "drizzle-orm";
-import { run } from "../orchestra/index";
+import { eq, desc, asc } from "drizzle-orm";
+import { run, type ChatContext } from "../orchestra/index";
 import { eventBus, type OrchestraEvent } from "../orchestra/events";
 
 const { upgradeWebSocket, websocket } = createBunWebSocket<ServerWebSocket>();
@@ -76,6 +76,41 @@ wsApp.get(
           content: userMessage,
         });
 
+        // Load chat history and summary for context
+        const chatHistory = await db
+          .select({
+            role: messages.role,
+            content: messages.content,
+            createdAt: messages.createdAt,
+          })
+          .from(messages)
+          .where(eq(messages.chatId, chatId))
+          .orderBy(asc(messages.createdAt));
+
+        const [currentChat] = await db
+          .select()
+          .from(chats)
+          .where(eq(chats.id, chatId));
+
+        const context: ChatContext = {
+          chatId,
+          history: chatHistory,
+          summary: currentChat?.summary ?? undefined,
+        };
+
+        console.log(
+          `[ws] Chat ${chatId}: ${chatHistory.length} messages in history${currentChat?.summary ? ", has summary" : ""}`
+        );
+
+        ws.send(
+          JSON.stringify({
+            type: "chat_info",
+            source: "server",
+            data: { chat_id: chatId },
+            timestamp: new Date().toISOString(),
+          })
+        );
+
         unsubscribe = eventBus.subscribe((orchestraEvent: OrchestraEvent) => {
           try {
             ws.send(JSON.stringify(orchestraEvent));
@@ -85,7 +120,7 @@ wsApp.get(
         });
 
         try {
-          const result = await run(userMessage);
+          const result = await run(userMessage, context);
 
           await db.insert(messages).values({
             chatId,
