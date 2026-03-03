@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+out/
+*.tgz
+
+# bun
+bun.lock
+*.lockb
+
+# drizzle generated metadata (keep migration SQL)
+drizzle/meta/
+
+# environment variables
+.env
+.env.*
+!.env.example
+
+# code coverage
+coverage/
+*.lcov
+
+# logs
+logs/
+*.log
+
+# caches
+.eslintcache
+.cache/
+*.tsbuildinfo
+
+# editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
