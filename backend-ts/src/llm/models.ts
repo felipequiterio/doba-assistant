@@ -26,7 +26,6 @@ const ollamaThinkingCompat: OpenAICompletionsCompat = {
 /**
  * Fast model for query classification and task planning.
  * Prioritize tool-calling reliability over raw intelligence.
- * TODO: Switch to qwen3:4b once pulled for faster routing.
  */
 export const ROUTER_MODEL: Model<"openai-completions"> = {
   id: "qwen3.5:4b",
@@ -37,8 +36,8 @@ export const ROUTER_MODEL: Model<"openai-completions"> = {
   reasoning: false,
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 8192,
-  maxTokens: 2048,
+  contextWindow: 32768,
+  maxTokens: 4096,
   compat: ollamaCompat,
 };
 
@@ -54,8 +53,8 @@ export const WORKER_MODEL: Model<"openai-completions"> = {
   reasoning: false,
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 4096,
-  maxTokens: 2048,
+  contextWindow: 32768,
+  maxTokens: 8192,
   compat: ollamaCompat,
 };
 
@@ -72,8 +71,8 @@ export const THINKING_MODEL: Model<"openai-completions"> = {
   reasoning: true,
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 16384,
-  maxTokens: 4096,
+  contextWindow: 32768,
+  maxTokens: 8192,
   compat: ollamaThinkingCompat,
 };
 
