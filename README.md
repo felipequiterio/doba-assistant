@@ -160,7 +160,7 @@ See [REFACTOR.md](REFACTOR.md) for the full architecture document. Current progr
 
 - [x] **Phase 1** — Project skeleton, database, EventBus, Ollama integration
 - [x] **Phase 2** — First agent end-to-end (TodoAgent + WebSocket + REST)
-- [ ] **Phase 3** — Smart 3-mode router + NotesAgent + all REST routes
+- [x] **Phase 3** — Smart 3-mode router + NotesAgent + all REST routes
 - [ ] **Phase 4** — Context management + compaction
 - [ ] **Phase 5** — Semantic memory (pgvector)
 - [ ] **Phase 6** — Knowledge graph
