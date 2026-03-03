@@ -6,6 +6,10 @@ import {
   updateTodoTool,
   deleteTodoTool,
 } from "../../tools/personal/todo-tools";
+import {
+  type ToolCache,
+  wrapToolsWithCache,
+} from "../../orchestra/tool-cache";
 
 const SYSTEM_PROMPT = `You are a todo management assistant. You help users create, list, update, and delete todo items.
 
@@ -16,12 +20,13 @@ When the user asks to remove or delete a todo, use the deleteTodo tool.
 
 After executing a tool, provide a brief natural language confirmation of what you did.`;
 
-export function createTodoAgent(): Agent {
+export function createTodoAgent(cache?: ToolCache): Agent {
+  const tools = [createTodoTool, listTodosTool, updateTodoTool, deleteTodoTool];
   return new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
       model: WORKER_MODEL,
-      tools: [createTodoTool, listTodosTool, updateTodoTool, deleteTodoTool],
+      tools: cache ? wrapToolsWithCache(tools, cache) : tools,
       thinkingLevel: "off",
     },
     getApiKey: () => "ollama",

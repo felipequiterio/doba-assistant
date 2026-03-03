@@ -2,6 +2,8 @@ import { Type } from "@sinclair/typebox";
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { ROUTER_MODEL } from "../llm/models";
 import { agentRegistry, type AgentDefinition } from "../agents/registry";
+import { assembleRouterPrompt } from "./context";
+import type { ChatContext } from "./index";
 
 // --- Routing result types ---
 
@@ -169,12 +171,54 @@ Rules:
 - Agent names must exactly match one of the available agents listed above.`;
 }
 
+// --- Router usage result ---
+
+export interface RouterUsage {
+  input: number;
+  output: number;
+  totalTokens: number;
+  shouldCompact: boolean;
+}
+
+export interface RouteQueryResult {
+  route: RouteResult;
+  usage?: RouterUsage;
+}
+
+function extractUsage(
+  agentMessages: any[],
+  shouldCompact: boolean
+): RouterUsage | undefined {
+  for (let i = agentMessages.length - 1; i >= 0; i--) {
+    const msg = agentMessages[i];
+    if (msg.role === "assistant" && msg.usage) {
+      return {
+        input: msg.usage.input ?? 0,
+        output: msg.usage.output ?? 0,
+        totalTokens: msg.usage.totalTokens ?? 0,
+        shouldCompact,
+      };
+    }
+  }
+  return undefined;
+}
+
 // --- Main routing function ---
 
-export async function routeQuery(query: string): Promise<RouteResult> {
+export async function routeQuery(
+  query: string,
+  context?: ChatContext
+): Promise<RouteQueryResult> {
   capturedRoute = null;
 
   const systemPrompt = buildRouterSystemPrompt(agentRegistry);
+
+  const { prompt, shouldCompact } = assembleRouterPrompt(
+    query,
+    context?.history ?? [],
+    context?.summary,
+    ROUTER_MODEL.contextWindow
+  );
 
   const router = new Agent({
     initialState: {
@@ -186,10 +230,12 @@ export async function routeQuery(query: string): Promise<RouteResult> {
     getApiKey: () => "ollama",
   });
 
-  await router.prompt(query);
+  await router.prompt(prompt);
+
+  const usage = extractUsage(router.state.messages, shouldCompact);
 
   if (capturedRoute) {
-    return capturedRoute;
+    return { route: capturedRoute, usage };
   }
 
   // Fallback: if the router didn't call any tool, treat its text output as a direct response
@@ -202,13 +248,16 @@ export async function routeQuery(query: string): Promise<RouteResult> {
         .map((c: any) => c.text)
         .join("\n");
       if (text) {
-        return { mode: "direct", content: text };
+        return { route: { mode: "direct", content: text }, usage };
       }
     }
   }
 
   return {
-    mode: "direct",
-    content: "I'm not sure how to help with that. Could you rephrase?",
+    route: {
+      mode: "direct",
+      content: "I'm not sure how to help with that. Could you rephrase?",
+    },
+    usage,
   };
 }

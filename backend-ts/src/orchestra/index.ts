@@ -4,11 +4,19 @@ import { routeQuery, type RouteResult } from "./router";
 import { runPlan } from "./runner";
 import { synthesize } from "./synthesis";
 import { eventBus, EventType } from "./events";
+import { triggerCompaction, type DbMessage } from "./context";
+
+export interface ChatContext {
+  chatId: number;
+  history: DbMessage[];
+  summary?: string;
+}
 
 export interface OrchestraResult {
   finalAnswer: string;
   agentName: string;
   mode: RouteResult["mode"];
+  usage?: { input: number; output: number; totalTokens: number };
 }
 
 function extractFinalAnswer(messages: any[]): string {
@@ -91,13 +99,16 @@ async function executeSingleAgent(
  * Routes the query through the smart router, then executes
  * the appropriate path (direct / single agent / multi-step plan).
  */
-export async function run(query: string): Promise<OrchestraResult> {
+export async function run(
+  query: string,
+  context?: ChatContext
+): Promise<OrchestraResult> {
   eventBus.emit(EventType.ORCHESTRA_START, "orchestra", { query });
 
   try {
-    // Step 1: Route the query
+    // Step 1: Route the query (with chat history context)
     eventBus.emit(EventType.TASK_GENERATION_START, "orchestra", { query });
-    const route = await routeQuery(query);
+    const { route, usage: routerUsage } = await routeQuery(query, context);
     eventBus.emit(EventType.TASK_GENERATION_END, "orchestra", {
       mode: route.mode,
       ...(route.mode === "single" && { agent: route.agentName }),
@@ -145,9 +156,28 @@ export async function run(query: string): Promise<OrchestraResult> {
     eventBus.emit(EventType.ORCHESTRA_END, "orchestra", {
       final_answer: finalAnswer,
       mode: route.mode,
+      usage: routerUsage,
     });
 
-    return { finalAnswer, agentName, mode: route.mode };
+    // Fire-and-forget: compact old messages if needed
+    if (routerUsage?.shouldCompact && context?.chatId) {
+      triggerCompaction(context.chatId, context.history).catch((err) =>
+        console.error("[context] Compaction failed:", err)
+      );
+    }
+
+    return {
+      finalAnswer,
+      agentName,
+      mode: route.mode,
+      usage: routerUsage
+        ? {
+            input: routerUsage.input,
+            output: routerUsage.output,
+            totalTokens: routerUsage.totalTokens,
+          }
+        : undefined,
+    };
   } catch (error) {
     const errorMsg =
       error instanceof Error ? error.message : "Unknown orchestra error";

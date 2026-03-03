@@ -37,6 +37,9 @@ export const todos = pgTable("todos", {
 export const chats = pgTable("chats", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
+  summary: text("summary"),
+  compactedAt: timestamp("compacted_at", { withTimezone: true }),
+  compactionCount: integer("compaction_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
