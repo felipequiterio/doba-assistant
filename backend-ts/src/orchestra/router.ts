@@ -148,7 +148,7 @@ function buildRouterSystemPrompt(
     .map((a) => `- "${a.name}": ${a.description}`)
     .join("\n");
 
-  return `You are JARVIS, an intelligent query router for a personal AI assistant system. Your job is to analyze the user's query and decide the best execution path.
+  return `You are DOBA, an intelligent query router for a personal AI assistant system. Your job is to analyze the user's query and decide the best execution path.
 
 You have access to the following agents:
 ${agentDescriptions}
