@@ -65,24 +65,30 @@ doba-assistant/
         ├── routes/
         │   ├── chat.ts                  # WebSocket handler + REST chat CRUD
         │   ├── todos.ts                 # REST todo CRUD
+        │   ├── notes.ts                 # REST notes CRUD
+        │   ├── ollama.ts               # Ollama model management (stats, load, unload)
         │   ├── swagger.ts               # OpenAPI spec + Swagger UI
         │   └── playground.ts            # Browser test page
         ├── orchestra/
         │   ├── index.ts                 # run() — main orchestration entry point
-        │   ├── router.ts               # Query → agent routing
+        │   ├── router.ts               # Smart 3-mode router (respondDirectly / dispatchToAgent / planMultiStep)
+        │   ├── runner.ts               # Multi-step plan executor (sequential + parallel)
+        │   ├── synthesis.ts            # Final answer synthesis for multi-agent results
         │   └── events.ts               # EventBus + event type definitions
         ├── agents/
         │   ├── registry.ts             # Agent registry (name → factory)
         │   └── personal/
-        │       └── todo-agent.ts       # TodoAgent definition
+        │       ├── todo-agent.ts       # TodoAgent definition
+        │       └── notes-agent.ts      # NotesAgent definition
         ├── tools/
         │   └── personal/
-        │       └── todo-tools.ts       # createTodo, listTodos, updateTodo, deleteTodo
+        │       ├── todo-tools.ts       # createTodo, listTodos, updateTodo, deleteTodo
+        │       └── notes-tools.ts      # createNote, listNotes, updateNote, deleteNote
         ├── llm/
         │   ├── models.ts              # Ollama model definitions (ROUTER, WORKER, THINKING)
         │   └── preload.ts             # Warm models into VRAM at startup
         ├── db/
-        │   ├── schema.ts              # Drizzle schema (todos, chats, messages, events)
+        │   ├── schema.ts              # Drizzle schema (todos, chats, messages, events, notes)
         │   └── client.ts              # Database connection
         └── test/
             └── smoke.test.ts          # EventBus, DB, and pi-ai integration tests
@@ -127,18 +133,29 @@ Connect via WebSocket. Send a JSON message, receive a stream of events:
 | POST | `/v1/todos` | Create a todo |
 | PATCH | `/v1/todos/:id` | Update a todo |
 | DELETE | `/v1/todos/:id` | Delete a todo |
+| GET | `/v1/notes` | List all notes |
+| POST | `/v1/notes` | Create a note |
+| PATCH | `/v1/notes/:id` | Update a note |
+| DELETE | `/v1/notes/:id` | Delete a note |
 | GET | `/v1/chats` | List all chats |
 | POST | `/v1/chats` | Create a chat |
 | GET | `/v1/chats/:id` | Get chat with messages |
 | DELETE | `/v1/chats/:id` | Delete a chat |
 | PUT | `/v1/chats/:id/title` | Rename a chat |
+| GET | `/v1/ollama/stats` | Running models and VRAM usage |
+| GET | `/v1/ollama/models` | List available Ollama models |
+| POST | `/v1/ollama/load` | Load a model into VRAM |
+| POST | `/v1/ollama/unload` | Unload a model from VRAM |
 
 ## How It Works
 
 1. **User sends a message** over WebSocket
-2. **Orchestra** emits `orchestra_start`, creates a fresh agent instance
-3. **Router** picks which agent handles the query (currently hardcoded to TodoAgent; smart 3-mode routing comes in Phase 3)
-4. **Agent** runs its agentic loop via pi-agent-core: calls the LLM, the LLM picks a tool, the tool executes, the result feeds back to the LLM
+2. **Orchestra** emits `orchestra_start`
+3. **Smart Router** (an LLM-powered Agent with three tools) classifies the query into one of three modes:
+   - **Mode 1 — Direct Response**: general knowledge, greetings, conversational queries. The router answers directly (1 LLM call).
+   - **Mode 2 — Single Agent Dispatch**: the query maps to one agent (e.g. "add milk to my todos" → TodoAgent). The router dispatches and the agent runs its agentic loop (2 LLM calls).
+   - **Mode 3 — Multi-Step Plan**: the query requires multiple agents (e.g. "summarize my notes and create todos for action items"). The router builds a plan, the runner dispatches each step, and a synthesis LLM call combines the results.
+4. **Agents** run their agentic loop via pi-agent-core: LLM → tool call → observe → loop until done
 5. **Tools** execute Drizzle queries against PostgreSQL
 6. **EventBus** streams every lifecycle event to the WebSocket client in real time
 7. **Orchestra** extracts the final answer and emits `orchestra_end`
