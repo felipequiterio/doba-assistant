@@ -4,6 +4,7 @@ import {
   LLM_PROVIDER,
   ROUTER_MODEL,
   WORKER_MODEL,
+  resolveApiKey,
 } from "../llm/models";
 
 const ollamaApp = new Hono();
@@ -35,6 +36,44 @@ ollamaApp.get("/active-models", async (c) => {
     }
   }
   return c.json({ provider: LLM_PROVIDER, models });
+});
+
+/**
+ * Returns remaining OpenRouter credits when LLM_PROVIDER=openrouter.
+ * OpenRouter response: { data: { total_credits: number, total_usage: number } }
+ * Remaining = total_credits - total_usage
+ */
+ollamaApp.get("/credits", async (c) => {
+  if (LLM_PROVIDER !== "openrouter") {
+    return c.json({ provider: LLM_PROVIDER, supported: false });
+  }
+
+  const apiKey = resolveApiKey("openrouter");
+  if (!apiKey) {
+    return c.json({ error: "OPENROUTER_API_KEY not set" }, 500);
+  }
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/credits", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) {
+      return c.json({ error: `OpenRouter returned ${res.status}` }, 502);
+    }
+    const body = (await res.json()) as {
+      data: { total_credits: number; total_usage: number };
+    };
+    const { total_credits, total_usage } = body.data;
+    return c.json({
+      provider: "openrouter",
+      supported: true,
+      total_credits,
+      total_usage,
+      remaining: total_credits - total_usage,
+    });
+  } catch {
+    return c.json({ error: "Failed to reach OpenRouter" }, 503);
+  }
 });
 
 ollamaApp.get("/stats", async (c) => {
