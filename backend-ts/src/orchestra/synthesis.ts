@@ -1,6 +1,7 @@
 import { completeSimple } from "@mariozechner/pi-ai";
-import { WORKER_MODEL } from "../llm/models";
+import { WORKER_MODEL, resolveApiKey } from "../llm/models";
 import type { StepResult } from "./runner";
+import type { CallUsage } from "./usage";
 
 const SYNTHESIS_SYSTEM_PROMPT = `You are JARVIS, a personal AI assistant. Your task is to synthesize the results from multiple sub-tasks into a single coherent response for the user.
 
@@ -10,6 +11,11 @@ Rules:
 - Be concise but complete. Do not repeat the original question back.
 - Do not mention internal step numbers, agent names, or system details.`;
 
+export interface SynthesisResult {
+  answer: string;
+  usage: CallUsage;
+}
+
 /**
  * Takes the original user query and the results from multiple agent steps,
  * produces a single coherent natural language answer.
@@ -17,7 +23,7 @@ Rules:
 export async function synthesize(
   originalQuery: string,
   stepResults: StepResult[]
-): Promise<string> {
+): Promise<SynthesisResult> {
   const resultsBlock = stepResults
     .map(
       (r, i) =>
@@ -43,7 +49,7 @@ export async function synthesize(
       ],
     },
     {
-      apiKey: "ollama",
+      apiKey: resolveApiKey(WORKER_MODEL.provider),
     }
   );
 
@@ -51,5 +57,15 @@ export async function synthesize(
     .filter((c) => c.type === "text")
     .map((c) => (c as any).text);
 
-  return textParts.join("\n") || "I completed the tasks but couldn't generate a summary.";
+  return {
+    answer: textParts.join("\n") || "I completed the tasks but couldn't generate a summary.",
+    usage: {
+      input: response.usage.input,
+      output: response.usage.output,
+      cacheRead: response.usage.cacheRead,
+      cacheWrite: response.usage.cacheWrite,
+      totalTokens: response.usage.totalTokens,
+      costTotal: response.usage.cost?.total ?? 0,
+    },
+  };
 }
