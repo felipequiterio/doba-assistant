@@ -1,7 +1,41 @@
 import { Hono } from "hono";
-import { OLLAMA_NATIVE_URL } from "../llm/models";
+import {
+  OLLAMA_NATIVE_URL,
+  LLM_PROVIDER,
+  ROUTER_MODEL,
+  WORKER_MODEL,
+} from "../llm/models";
 
 const ollamaApp = new Hono();
+
+/**
+ * Returns the active LLM models for the playground status footer.
+ * When using Ollama, proxies /api/ps to show VRAM-loaded models.
+ * When using another provider, returns the configured model names directly.
+ */
+ollamaApp.get("/active-models", async (c) => {
+  if (LLM_PROVIDER === "ollama") {
+    try {
+      const res = await fetch(`${OLLAMA_NATIVE_URL}/api/ps`);
+      if (!res.ok) return c.json({ provider: "ollama", models: [] });
+      const data = (await res.json()) as { models?: any[] };
+      return c.json({ provider: "ollama", models: data.models ?? [] });
+    } catch {
+      return c.json({ provider: "ollama", models: [] });
+    }
+  }
+
+  // Cloud provider: report the configured model IDs
+  const seen = new Set<string>();
+  const models: { name: string }[] = [];
+  for (const m of [ROUTER_MODEL, WORKER_MODEL]) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id);
+      models.push({ name: m.id });
+    }
+  }
+  return c.json({ provider: LLM_PROVIDER, models });
+});
 
 ollamaApp.get("/stats", async (c) => {
   try {
