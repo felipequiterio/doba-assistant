@@ -3,6 +3,12 @@ import { agentRegistry } from "../agents/registry";
 import { eventBus, EventType } from "./events";
 import type { PlanStep } from "./router";
 import { ToolCache } from "./tool-cache";
+import {
+  type CallUsage,
+  zeroUsage,
+  addUsage,
+  extractUsageFromMessages,
+} from "./usage";
 
 export interface StepResult {
   stepIndex: number;
@@ -10,6 +16,12 @@ export interface StepResult {
   task: string;
   result: string;
   success: boolean;
+  usage: CallUsage;
+}
+
+export interface PlanResult {
+  results: StepResult[];
+  usage: CallUsage;
 }
 
 function extractFinalAnswer(messages: any[]): string {
@@ -75,6 +87,7 @@ async function executeStep(
       task: step.task,
       result: error,
       success: false,
+      usage: zeroUsage(),
     };
   }
 
@@ -108,6 +121,7 @@ async function executeStep(
 
     await agent.prompt(enrichedTask);
     const result = extractFinalAnswer(agent.state.messages);
+    const usage = extractUsageFromMessages(agent.state.messages);
 
     eventBus.emit(EventType.AGENT_END, step.agent_name, { result });
     eventBus.emit(EventType.TASK_COMPLETE, step.agent_name, {
@@ -115,13 +129,7 @@ async function executeStep(
       result,
     });
 
-    return {
-      stepIndex,
-      agentName: step.agent_name,
-      task: step.task,
-      result,
-      success: true,
-    };
+    return { stepIndex, agentName: step.agent_name, task: step.task, result, success: true, usage };
   } catch (error) {
     const errorMsg =
       error instanceof Error ? error.message : "Unknown agent error";
@@ -135,6 +143,7 @@ async function executeStep(
       task: step.task,
       result: `Error: ${errorMsg}`,
       success: false,
+      usage: zeroUsage(),
     };
   } finally {
     unsub();
@@ -148,7 +157,7 @@ async function executeStep(
  * A shared ToolCache avoids redundant DB reads for read-only tools
  * across steps within the same plan execution.
  */
-export async function runPlan(steps: PlanStep[]): Promise<StepResult[]> {
+export async function runPlan(steps: PlanStep[]): Promise<PlanResult> {
   const cache = new ToolCache();
   const results: StepResult[] = [];
   let i = 0;
@@ -178,6 +187,7 @@ export async function runPlan(steps: PlanStep[]): Promise<StepResult[]> {
               task: batch?.step.task ?? "",
               result: `Error: ${outcome.reason}`,
               success: false,
+              usage: zeroUsage(),
             });
           }
         }
@@ -192,5 +202,11 @@ export async function runPlan(steps: PlanStep[]): Promise<StepResult[]> {
   }
 
   results.sort((a, b) => a.stepIndex - b.stepIndex);
-  return results;
+
+  const usage = results.reduce(
+    (acc, r) => addUsage(acc, r.usage),
+    zeroUsage()
+  );
+
+  return { results, usage };
 }

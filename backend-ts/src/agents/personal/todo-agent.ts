@@ -1,5 +1,5 @@
 import { Agent } from "@mariozechner/pi-agent-core";
-import { WORKER_MODEL } from "../../llm/models";
+import { WORKER_MODEL, resolveApiKey } from "../../llm/models";
 import {
   createTodoTool,
   listTodosTool,
@@ -29,7 +29,7 @@ export function createTodoAgent(cache?: ToolCache): Agent {
       tools: cache ? wrapToolsWithCache(tools, cache) : tools,
       thinkingLevel: "off",
     },
-    getApiKey: () => "ollama",
+    getApiKey: resolveApiKey,
   });
 }
 

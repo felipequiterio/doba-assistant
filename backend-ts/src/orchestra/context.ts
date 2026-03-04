@@ -1,5 +1,5 @@
 import { completeSimple } from "@mariozechner/pi-ai";
-import { WORKER_MODEL, ROUTER_MODEL } from "../llm/models";
+import { WORKER_MODEL, ROUTER_MODEL, resolveApiKey } from "../llm/models";
 import { db } from "../db/client";
 import { chats } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
@@ -105,7 +105,7 @@ export async function compactMessages(
         },
       ],
     },
-    { apiKey: "ollama" }
+    { apiKey: resolveApiKey(WORKER_MODEL.provider) }
   );
 
   const textParts = response.content

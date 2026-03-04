@@ -175,12 +175,12 @@ describe("Database", () => {
 
 // --- pi-ai LLM test (requires Ollama running) ---
 
-describe("pi-ai + Ollama", () => {
+describe("pi-ai + LLM", () => {
   test(
-    "completeSimple returns a response from Ollama",
+    "completeSimple returns a response from the configured provider",
     async () => {
       const { completeSimple } = await import("@mariozechner/pi-ai");
-      const { ROUTER_MODEL } = await import("../llm/models");
+      const { ROUTER_MODEL, resolveApiKey } = await import("../llm/models");
 
       const response = await completeSimple(
         ROUTER_MODEL,
@@ -196,7 +196,7 @@ describe("pi-ai + Ollama", () => {
           ],
         },
         {
-          apiKey: process.env.OLLAMA_API_KEY || "ollama",
+          apiKey: resolveApiKey(ROUTER_MODEL.provider),
         }
       );
 

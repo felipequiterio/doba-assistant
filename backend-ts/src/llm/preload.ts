@@ -1,4 +1,9 @@
-import { ROUTER_MODEL, WORKER_MODEL, OLLAMA_NATIVE_URL } from "./models";
+import {
+  ROUTER_MODEL,
+  WORKER_MODEL,
+  OLLAMA_NATIVE_URL,
+  LLM_PROVIDER,
+} from "./models";
 
 interface OllamaGenerateRequest {
   model: string;
@@ -36,6 +41,11 @@ async function loadModel(modelId: string): Promise<void> {
  * Gracefully handles Ollama not being available.
  */
 export async function preloadModels(): Promise<void> {
+  if (LLM_PROVIDER !== "ollama") {
+    console.log(`[preload] Skipping Ollama preload (LLM_PROVIDER=${LLM_PROVIDER})`);
+    return;
+  }
+
   const models = [
     { name: ROUTER_MODEL.name, id: ROUTER_MODEL.id },
     { name: WORKER_MODEL.name, id: WORKER_MODEL.id },
