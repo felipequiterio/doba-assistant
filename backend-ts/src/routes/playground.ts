@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { html } from "hono/html";
+import { ROUTER_MODEL } from "../llm/models";
 
 const playgroundApp = new Hono();
 
 playgroundApp.get("/playground", (c) => {
+  const contextWindow = ROUTER_MODEL.contextWindow;
   return c.html(html`<!doctype html>
     <html lang="en">
       <head>
@@ -733,6 +735,10 @@ playgroundApp.get("/playground", (c) => {
             <span class="footer-label">Mode</span>
             <span class="footer-value" id="modeText">--</span>
           </div>
+          <div class="footer-group">
+            <span class="footer-label">Cost</span>
+            <span class="footer-value" id="costText">$0.000000</span>
+          </div>
         </footer>
 
         <script>
@@ -752,6 +758,7 @@ playgroundApp.get("/playground", (c) => {
           const contextText = document.getElementById("contextText");
           const tokenText = document.getElementById("tokenText");
           const modeText = document.getElementById("modeText");
+          const costText = document.getElementById("costText");
           const autoScrollCb = document.getElementById("autoScroll");
           const filterBar = document.getElementById("filterBar");
 
@@ -762,7 +769,8 @@ playgroundApp.get("/playground", (c) => {
           let messageCount = 0;
           let cumulativeInput = 0;
           let cumulativeOutput = 0;
-          const CONTEXT_WINDOW = 32768;
+          let cumulativeCost = 0;
+          const CONTEXT_WINDOW = ${contextWindow};
 
           var hiddenTypes = {};
           var startTimes = {};
@@ -853,11 +861,16 @@ playgroundApp.get("/playground", (c) => {
               if (data.data.usage) {
                 var u = data.data.usage;
                 var inp = u.input || 0;
-                var out = u.output || u.output || 0;
-                var total = u.totalTokens || (inp + out);
+                var out = u.output || 0;
+                var cost = u.costTotal || 0;
                 cumulativeInput += inp;
                 cumulativeOutput += out;
-                tokenText.textContent = "in: " + cumulativeInput.toLocaleString() + "  out: " + cumulativeOutput.toLocaleString();
+                cumulativeCost += cost;
+                var cacheStr = (u.cacheRead || u.cacheWrite)
+                  ? " cache:" + ((u.cacheRead || 0) + (u.cacheWrite || 0)).toLocaleString()
+                  : "";
+                tokenText.textContent = "in: " + cumulativeInput.toLocaleString() + "  out: " + cumulativeOutput.toLocaleString() + cacheStr;
+                costText.textContent = "$" + cumulativeCost.toFixed(6);
                 updateContextMeter(inp);
               }
 
@@ -1193,11 +1206,13 @@ playgroundApp.get("/playground", (c) => {
             messageCount = 0;
             cumulativeInput = 0;
             cumulativeOutput = 0;
+            cumulativeCost = 0;
             requestStartTime = null;
             removeTyping();
             chat.innerHTML = '<div class="chat-empty" id="chatEmpty"><div class="chat-empty-icon">💬</div><div class="chat-empty-text">Send a message to start chatting</div></div>';
             chatInfo.textContent = "no chat";
             tokenText.textContent = "in: --  out: --";
+            costText.textContent = "$0.000000";
             contextText.textContent = "--";
             meterFill.style.width = "0%";
             meterFill.className = "meter-fill";
@@ -1209,7 +1224,7 @@ playgroundApp.get("/playground", (c) => {
 
           async function fetchModels() {
             try {
-              var res = await fetch("/v1/ollama/stats");
+              var res = await fetch("/v1/ollama/active-models");
               var data = await res.json();
               if (data.models && data.models.length > 0) {
                 modelStatus.innerHTML = data.models.map(function(m) {
@@ -1222,7 +1237,7 @@ playgroundApp.get("/playground", (c) => {
                 modelStatus.innerHTML = '<span style="color:#ef4444">no models loaded</span>';
               }
             } catch {
-              modelStatus.innerHTML = '<span style="color:#ef4444">ollama unreachable</span>';
+              modelStatus.innerHTML = '<span style="color:#ef4444">provider unreachable</span>';
             }
           }
 
