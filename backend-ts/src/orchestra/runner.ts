@@ -62,7 +62,8 @@ function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
 async function executeStep(
   step: PlanStep,
   stepIndex: number,
-  cache: ToolCache
+  cache: ToolCache,
+  previousResults?: StepResult[]
 ): Promise<StepResult> {
   const definition = agentRegistry.get(step.agent_name);
   if (!definition) {
@@ -75,6 +76,18 @@ async function executeStep(
       result: error,
       success: false,
     };
+  }
+
+  // Enrich the task with results from previous sequential steps
+  let enrichedTask = step.task;
+  if (previousResults && previousResults.length > 0) {
+    const successfulContext = previousResults
+      .filter((r) => r.success)
+      .map((r) => `[${r.agentName}]: ${r.result}`)
+      .join("\n");
+    if (successfulContext) {
+      enrichedTask = `${step.task}\n\nContext from previous steps:\n${successfulContext}`;
+    }
   }
 
   eventBus.emit(EventType.TASK_START, step.agent_name, {
@@ -90,10 +103,10 @@ async function executeStep(
 
   try {
     eventBus.emit(EventType.AGENT_START, step.agent_name, {
-      task: step.task,
+      task: enrichedTask,
     });
 
-    await agent.prompt(step.task);
+    await agent.prompt(enrichedTask);
     const result = extractFinalAnswer(agent.state.messages);
 
     eventBus.emit(EventType.AGENT_END, step.agent_name, { result });
@@ -169,7 +182,7 @@ export async function runPlan(steps: PlanStep[]): Promise<StepResult[]> {
           }
         }
       } else {
-        const result = await executeStep(steps[i], i, cache);
+        const result = await executeStep(steps[i], i, cache, results);
         results.push(result);
         i++;
       }
