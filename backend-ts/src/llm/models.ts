@@ -28,8 +28,8 @@ const ollamaThinkingCompat: OpenAICompletionsCompat = {
  * Prioritize tool-calling reliability over raw intelligence.
  */
 export const ROUTER_MODEL: Model<"openai-completions"> = {
-  id: "qwen3.5:4b",
-  name: "Qwen3.5 4B (Router)",
+  id: "qwen3.5:9b",
+  name: "Qwen3.5 9B (Router)",
   api: "openai-completions",
   provider: "ollama",
   baseUrl: OLLAMA_BASE_URL,

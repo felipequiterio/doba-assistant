@@ -371,11 +371,11 @@ This is the real agentic loop. Each sub-agent can now reason, use multiple tools
 
 pi-mono has NO built-in router or multi-agent concept. The orchestration layer is built from scratch, preserving orchestra's plan-and-execute design with one important improvement: **not all queries need the full plan-and-execute pipeline.**
 
-#### 4.2.1 Query Classification — The Three Execution Modes
+#### 4.2.1 Query Classification — The Four Execution Modes
 
 The current Python orchestra always runs the full pipeline regardless of query complexity. This adds 2-3 unnecessary LLM calls for simple requests. The TypeScript system introduces a classification step as the router's first decision.
 
-The `OrchestraRouter` is a pi-agent-core `Agent` whose FIRST tool call classifies the query and determines the execution path. It has three tools available:
+The `OrchestraRouter` is a pi-agent-core `Agent` whose FIRST tool call classifies the query and determines the execution path. It has four tools available:
 
 **Mode 1 — Direct Response** (`respondDirectly`)
 > Used when: no tools or agents are needed. The LLM can answer from its own knowledge.
@@ -390,10 +390,17 @@ The `OrchestraRouter` is a pi-agent-core `Agent` whose FIRST tool call classifie
 > Flow: `query → router → dispatchToAgent(agent, task) → agent runs → result to user`
 
 **Mode 3 — Full Plan-and-Execute** (`planMultiStep`)
-> Used when: the query requires coordination between multiple agents, sequential dependent steps, or the intent is ambiguous enough to warrant explicit planning.
-> Examples: "summarize my notes and create action item todos", "what did I add to my todo list this week and remind me about them", "search for X and save the result as a note".
+> Used when: the query requires coordination between multiple agents with INDEPENDENT tasks that don't depend on each other's results.
+> Examples: "summarize my notes and create action item todos", "list my todos and create a note summarizing them".
 > Cost: 1 router LLM call (planning) + N agent LLM calls + 1 synthesis LLM call
 > Flow: `query → router → planMultiStep(steps[]) → OrchestraRunner → agents → synthesis → user`
+> Note: Sequential steps receive context from previous step results, so later agents can reference earlier results.
+
+**Mode 4 — Adaptive Orchestration** (`callAgentAndObserve`)
+> Used when: the query involves conditional logic, result-dependent decisions, or data inspection before acting. The router executes agents one at a time, observes results, reasons about them, and decides the next action — all within its own agentic loop.
+> Examples: "check my todos, if there's one about project X mark it done, otherwise create it", "what notes and todos do I have? if I have a todo about phase 4, mark it complete, if not create one and mark it complete".
+> Cost: 1+ router LLM calls (interleaved with agent executions) + N agent executions
+> Flow: `query → router → callAgentAndObserve(agent, task) → observe result → reason → callAgentAndObserve(agent, next task) → ... → respondDirectly(final answer) → user`
 
 This classification happens naturally inside the router agent's own agentic loop — there is no separate classifier LLM call. The router is given the query, the available agents, and context from memory, and it picks which tool to call first. This is the key insight: classification IS the planning.
 
@@ -412,14 +419,21 @@ Query: "what is 2 + 2"
 Query: "summarize my notes from this week and create todos for any action items"
 → Router identifies 2 agents needed (NotesAgent, TodoAgent)
 → Router calls planMultiStep([{ agent: "notes_agent", task: "..." }, { agent: "todo_agent", task: "..." }])
-→ OrchestraRunner dispatches to each agent sequentially
+→ OrchestraRunner dispatches to each agent sequentially (later steps receive earlier results as context)
 → Synthesis step combines results
 → Done. Full pipeline.
+
+Query: "check my todos, if there's one about phase 4 mark it done, otherwise create it"
+→ Router calls callAgentAndObserve("todo_agent", "list all todos")
+→ Router receives the todo list, sees no phase 4 todo
+→ Router calls callAgentAndObserve("todo_agent", "create a todo called 'code phase 4' and mark it complete")
+→ Router calls respondDirectly("I checked your todos and didn't find one about phase 4, so I created 'code phase 4' and marked it complete.")
+→ Done. Conditional logic handled naturally.
 ```
 
 #### 4.2.2 Full Orchestration Components
 
-1. **OrchestraRouter** — a pi-agent-core `Agent` with three dispatch tools (`respondDirectly`, `dispatchToAgent`, `planMultiStep`) and access to the agent registry (names + descriptions). Receives: user query + chat history + memory context. Emits: `TASK_GENERATION_START/END` events. This replaces `task.generate()`.
+1. **OrchestraRouter** — a pi-agent-core `Agent` with four dispatch tools (`respondDirectly`, `dispatchToAgent`, `planMultiStep`, `callAgentAndObserve`) and access to the agent registry (names + descriptions). Receives: user query + chat history + memory context. Emits: `TASK_GENERATION_START/END` events. This replaces `task.generate()`. Includes retry logic: if the router fails to call any tool on first attempt, it retries with a nudge prompt. Tools are created per-request as closures over a `RouterState` object to avoid shared mutable state between concurrent requests.
 
 2. **OrchestraRunner** — receives a task list from the `planMultiStep` tool call, dispatches each task to the corresponding `Agent` instance by name, collects results in order. This replaces `task.route()`. For independent tasks with `is_async: true`, can dispatch in parallel using `Promise.all`.
 
@@ -1519,7 +1533,7 @@ If you are a new Claude instance reading this document to assist with the TypeSc
 1. The frontend must not need changes. Match the existing API contract exactly (same event names, same REST routes, same response shapes).
 2. Build on pi-mono (`@mariozechner/pi-ai` + `@mariozechner/pi-agent-core`) as the LLM and agent loop foundation. Do not reimplement LLM streaming or tool dispatch from scratch.
 3. Build the multi-agent orchestration layer yourself on top of pi-mono. pi-mono has no built-in router or multi-agent concept.
-4. The router uses THREE tools to classify queries: `respondDirectly` (no agents), `dispatchToAgent` (single agent), `planMultiStep` (full plan-and-execute). Not every query needs the full pipeline.
+4. The router uses FOUR tools to classify queries: `respondDirectly` (no agents), `dispatchToAgent` (single agent), `planMultiStep` (independent multi-agent tasks), `callAgentAndObserve` (adaptive orchestration for conditional/dependent logic). Not every query needs the full pipeline.
 5. Use Bun as the runtime and Hono as the HTTP/WebSocket server.
 6. Use Drizzle ORM for database access. Preserve the same data model (same table names and column semantics as the current SQLAlchemy models), adding memory tables as needed.
 7. Preserve the EventBus event protocol. The TypeScript EventBus must emit events with the same type strings as the Python EventType enum.
@@ -1537,7 +1551,7 @@ If you are a new Claude instance reading this document to assist with the TypeSc
 - Section 1.3 — complete chat message flow (what you are reimplementing)
 - Section 1.5 — current database schema
 - Section 1.6 — all event types that must be preserved
-- Section 4.2 — smart routing (three execution modes, when each is used)
+- Section 4.2 — smart routing (four execution modes, when each is used)
 - Section 4.4 — mapping of Python concepts to TypeScript equivalents
 - Section 4.5 — target directory structure
 - Section 8 — memory architecture (implement after core is working)
@@ -1548,5 +1562,5 @@ If you are a new Claude instance reading this document to assist with the TypeSc
 
 ---
 
-*Last updated: 2026-03-02 (v5 — frontend rewrite and DOBA Tactical Dark design system)*
+*Last updated: 2026-03-03 (v6 — adaptive orchestration mode, router retry logic, step context passing)*
 *Full codebase audit performed on commit: main branch (see git log for exact hash)*
