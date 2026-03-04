@@ -5,6 +5,12 @@ import { runPlan } from "./runner";
 import { synthesize } from "./synthesis";
 import { eventBus, EventType } from "./events";
 import { triggerCompaction, type DbMessage } from "./context";
+import {
+  type CallUsage,
+  zeroUsage,
+  addUsage,
+  extractUsageFromMessages,
+} from "./usage";
 
 export interface ChatContext {
   chatId: number;
@@ -16,7 +22,7 @@ export interface OrchestraResult {
   finalAnswer: string;
   agentName: string;
   mode: RouteResult["mode"];
-  usage?: { input: number; output: number; totalTokens: number };
+  usage?: CallUsage;
 }
 
 function extractFinalAnswer(messages: any[]): string {
@@ -72,7 +78,7 @@ function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
 async function executeSingleAgent(
   agentName: string,
   task: string
-): Promise<string> {
+): Promise<{ result: string; usage: CallUsage }> {
   const definition = agentRegistry.get(agentName);
   if (!definition) {
     throw new Error(`Agent "${agentName}" not found in registry`);
@@ -87,8 +93,9 @@ async function executeSingleAgent(
     eventBus.emit(EventType.AGENT_START, agentName, { task });
     await agent.prompt(task);
     const result = extractFinalAnswer(agent.state.messages);
+    const usage = extractUsageFromMessages(agent.state.messages);
     eventBus.emit(EventType.AGENT_END, agentName, { result });
-    return result;
+    return { result, usage };
   } finally {
     unsub();
   }
@@ -120,6 +127,18 @@ export async function run(
       }),
     });
 
+    // Start usage accumulator from router
+    let totalUsage: CallUsage = routerUsage
+      ? {
+          input: routerUsage.input,
+          output: routerUsage.output,
+          cacheRead: routerUsage.cacheRead,
+          cacheWrite: routerUsage.cacheWrite,
+          totalTokens: routerUsage.totalTokens,
+          costTotal: routerUsage.costTotal,
+        }
+      : zeroUsage();
+
     let finalAnswer: string;
     let agentName: string;
 
@@ -136,18 +155,30 @@ export async function run(
         eventBus.emit(EventType.TASK_START, route.agentName, {
           task: route.task,
         });
-        finalAnswer = await executeSingleAgent(route.agentName, route.task);
+        const { result, usage: agentUsage } = await executeSingleAgent(
+          route.agentName,
+          route.task
+        );
         eventBus.emit(EventType.TASK_COMPLETE, route.agentName, {
-          result: finalAnswer,
+          result,
         });
+        totalUsage = addUsage(totalUsage, agentUsage);
+        finalAnswer = result;
         agentName = route.agentName;
         break;
       }
 
       // Mode 3: Multi-step plan
       case "multi": {
-        const stepResults = await runPlan(route.steps);
-        finalAnswer = await synthesize(query, stepResults);
+        const { results: stepResults, usage: planUsage } = await runPlan(
+          route.steps
+        );
+        const { answer, usage: synthUsage } = await synthesize(
+          query,
+          stepResults
+        );
+        totalUsage = addUsage(addUsage(totalUsage, planUsage), synthUsage);
+        finalAnswer = answer;
         agentName = route.steps.map((s) => s.agent_name).join(", ");
         break;
       }
@@ -156,7 +187,7 @@ export async function run(
     eventBus.emit(EventType.ORCHESTRA_END, "orchestra", {
       final_answer: finalAnswer,
       mode: route.mode,
-      usage: routerUsage,
+      usage: totalUsage,
     });
 
     // Fire-and-forget: compact old messages if needed
@@ -170,13 +201,7 @@ export async function run(
       finalAnswer,
       agentName,
       mode: route.mode,
-      usage: routerUsage
-        ? {
-            input: routerUsage.input,
-            output: routerUsage.output,
-            totalTokens: routerUsage.totalTokens,
-          }
-        : undefined,
+      usage: totalUsage,
     };
   } catch (error) {
     const errorMsg =
