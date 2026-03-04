@@ -4,7 +4,7 @@ import {
   type AgentTool,
   type AgentEvent,
 } from "@mariozechner/pi-agent-core";
-import { ROUTER_MODEL } from "../llm/models";
+import { ROUTER_MODEL, resolveApiKey } from "../llm/models";
 import { agentRegistry, type AgentDefinition } from "../agents/registry";
 import { assembleRouterPrompt } from "./context";
 import { eventBus, EventType } from "./events";
@@ -326,7 +326,10 @@ Examples:
 export interface RouterUsage {
   input: number;
   output: number;
+  cacheRead: number;
+  cacheWrite: number;
   totalTokens: number;
+  costTotal: number;
   shouldCompact: boolean;
 }
 
@@ -339,18 +342,28 @@ function extractUsage(
   agentMessages: any[],
   shouldCompact: boolean
 ): RouterUsage | undefined {
-  for (let i = agentMessages.length - 1; i >= 0; i--) {
-    const msg = agentMessages[i];
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let totalTokens = 0;
+  let costTotal = 0;
+  let found = false;
+
+  for (const msg of agentMessages) {
     if (msg.role === "assistant" && msg.usage) {
-      return {
-        input: msg.usage.input ?? 0,
-        output: msg.usage.output ?? 0,
-        totalTokens: msg.usage.totalTokens ?? 0,
-        shouldCompact,
-      };
+      found = true;
+      input += msg.usage.input ?? 0;
+      output += msg.usage.output ?? 0;
+      cacheRead += msg.usage.cacheRead ?? 0;
+      cacheWrite += msg.usage.cacheWrite ?? 0;
+      totalTokens += msg.usage.totalTokens ?? 0;
+      costTotal += msg.usage.cost?.total ?? 0;
     }
   }
-  return undefined;
+
+  if (!found) return undefined;
+  return { input, output, cacheRead, cacheWrite, totalTokens, costTotal, shouldCompact };
 }
 
 function extractTextFromMessages(messages: any[]): string | null {
@@ -392,7 +405,7 @@ export async function routeQuery(
       tools,
       thinkingLevel: "off",
     },
-    getApiKey: () => "ollama",
+    getApiKey: resolveApiKey,
   });
 
   await router.prompt(prompt);
