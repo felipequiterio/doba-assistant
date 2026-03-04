@@ -66,6 +66,25 @@ function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
       }
       break;
 
+    case "turn_end": {
+      const msg = event.message as any;
+      const toolCalls = Array.isArray(msg.content)
+        ? msg.content
+            .filter((c: any) => c.type === "toolCall")
+            .map((c: any) => c.name)
+        : [];
+      eventBus.emit(EventType.LLM_CALL, agentName, {
+        model: msg.model ?? "unknown",
+        provider: msg.provider ?? "unknown",
+        input: msg.usage?.input ?? 0,
+        output: msg.usage?.output ?? 0,
+        cache_read: msg.usage?.cacheRead ?? 0,
+        cost: msg.usage?.cost?.total ?? 0,
+        tool_calls: toolCalls,
+      });
+      break;
+    }
+
     default:
       break;
   }
