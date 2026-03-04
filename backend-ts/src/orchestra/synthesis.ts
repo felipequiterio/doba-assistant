@@ -2,6 +2,7 @@ import { completeSimple } from "@mariozechner/pi-ai";
 import { WORKER_MODEL, resolveApiKey } from "../llm/models";
 import type { StepResult } from "./runner";
 import type { CallUsage } from "./usage";
+import { eventBus, EventType } from "./events";
 
 const SYNTHESIS_SYSTEM_PROMPT = `You are JARVIS, a personal AI assistant. Your task is to synthesize the results from multiple sub-tasks into a single coherent response for the user.
 
@@ -57,15 +58,27 @@ export async function synthesize(
     .filter((c) => c.type === "text")
     .map((c) => (c as any).text);
 
+  const usage: CallUsage = {
+    input: response.usage.input,
+    output: response.usage.output,
+    cacheRead: response.usage.cacheRead,
+    cacheWrite: response.usage.cacheWrite,
+    totalTokens: response.usage.totalTokens,
+    costTotal: response.usage.cost?.total ?? 0,
+  };
+
+  eventBus.emit(EventType.LLM_CALL, "synthesis", {
+    model: (response as any).model ?? WORKER_MODEL.id,
+    provider: WORKER_MODEL.provider,
+    input: usage.input,
+    output: usage.output,
+    cache_read: usage.cacheRead,
+    cost: usage.costTotal,
+    tool_calls: [],
+  });
+
   return {
     answer: textParts.join("\n") || "I completed the tasks but couldn't generate a summary.",
-    usage: {
-      input: response.usage.input,
-      output: response.usage.output,
-      cacheRead: response.usage.cacheRead,
-      cacheWrite: response.usage.cacheWrite,
-      totalTokens: response.usage.totalTokens,
-      costTotal: response.usage.cost?.total ?? 0,
-    },
+    usage,
   };
 }
