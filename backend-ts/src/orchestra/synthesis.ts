@@ -1,5 +1,5 @@
 import { completeSimple } from "@mariozechner/pi-ai";
-import { WORKER_MODEL, resolveApiKey } from "../llm/models";
+import { WORKER_MODEL, THINKING_MODEL, resolveApiKey } from "../llm/models";
 import type { StepResult } from "./runner";
 import type { CallUsage } from "./usage";
 import { eventBus, EventType } from "./events";
@@ -20,11 +20,18 @@ export interface SynthesisResult {
 /**
  * Takes the original user query and the results from multiple agent steps,
  * produces a single coherent natural language answer.
+ *
+ * When useThinking is true (any plan step requested thinking), synthesis uses
+ * THINKING_MODEL with "min" effort so the combinator has enough reasoning depth
+ * to correctly merge complex or contradictory results.
  */
 export async function synthesize(
   originalQuery: string,
-  stepResults: StepResult[]
+  stepResults: StepResult[],
+  useThinking = false
 ): Promise<SynthesisResult> {
+  const model = useThinking ? THINKING_MODEL : WORKER_MODEL;
+
   const resultsBlock = stepResults
     .map(
       (r, i) =>
@@ -33,7 +40,7 @@ export async function synthesize(
     .join("\n\n");
 
   const response = await completeSimple(
-    WORKER_MODEL,
+    model,
     {
       systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
       messages: [
@@ -50,7 +57,8 @@ export async function synthesize(
       ],
     },
     {
-      apiKey: resolveApiKey(WORKER_MODEL.provider),
+      apiKey: resolveApiKey(model.provider),
+      ...(useThinking && { reasoning: "low" as const }),
     }
   );
 
@@ -68,8 +76,8 @@ export async function synthesize(
   };
 
   eventBus.emit(EventType.LLM_CALL, "synthesis", {
-    model: (response as any).model ?? WORKER_MODEL.id,
-    provider: WORKER_MODEL.provider,
+    model: (response as any).model ?? model.id,
+    provider: model.provider,
     input: usage.input,
     output: usage.output,
     cache_read: usage.cacheRead,
