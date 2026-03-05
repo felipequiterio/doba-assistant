@@ -10,11 +10,12 @@ import {
   NOTES_AGENT_DESCRIPTION,
 } from "./personal/notes-agent";
 import type { ToolCache } from "../orchestra/tool-cache";
+import type { ThinkingLevel } from "../llm/models";
 
 export interface AgentDefinition {
   name: string;
   description: string;
-  createAgent: (cache?: ToolCache) => Agent;
+  createAgent: (cache?: ToolCache, thinkingLevel?: ThinkingLevel) => Agent;
 }
 
 export const agentRegistry = new Map<string, AgentDefinition>();
