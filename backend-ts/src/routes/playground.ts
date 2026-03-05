@@ -602,6 +602,9 @@ playgroundApp.get("/playground", (c) => {
           .footer-value.error {
             color: #ef4444;
           }
+          .footer-value.info {
+            color: #818cf8;
+          }
 
           /* Context meter */
           .context-meter {
@@ -842,9 +845,15 @@ playgroundApp.get("/playground", (c) => {
             } else if (data.type === "connected") {
               addChat("system", data.data.message);
             } else if (data.type === "task_generation_end" && data.data?.mode) {
-              modeText.textContent = data.data.mode;
-              if (data.data.mode === "direct") modeText.className = "footer-value";
-              else if (data.data.mode === "single") modeText.className = "footer-value active";
+              var mode = data.data.mode;
+              if (mode === "observe" && data.data.agents && data.data.agents.length) {
+                modeText.textContent = "observe(" + data.data.agents.join("+") + ")";
+              } else {
+                modeText.textContent = mode;
+              }
+              if (mode === "direct") modeText.className = "footer-value";
+              else if (mode === "single") modeText.className = "footer-value active";
+              else if (mode === "observe") modeText.className = "footer-value info";
               else modeText.className = "footer-value warn";
             } else if (data.type === "orchestra_end" && data.data?.final_answer) {
               var answer = data.data.final_answer;
@@ -1147,7 +1156,15 @@ playgroundApp.get("/playground", (c) => {
               if (dd.tool) parts.push(dd.tool);
               if (dd.query) parts.push(dd.query.length > 50 ? dd.query.slice(0, 50) + "..." : dd.query);
               if (dd.agent) parts.push(dd.agent);
-              if (dd.mode) parts.push("mode:" + dd.mode);
+              if (dd.mode) {
+                var modeLabel = dd.mode;
+                if (dd.mode === "observe" && dd.agents && dd.agents.length) {
+                  modeLabel = "mode:observe(" + dd.agents.join("+") + ")";
+                } else {
+                  modeLabel = "mode:" + dd.mode;
+                }
+                parts.push(modeLabel);
+              }
               if (dd.step) parts.push("step " + dd.step);
               if (dd.task) parts.push(dd.task.length > 50 ? dd.task.slice(0, 50) + "..." : dd.task);
               if (dd.error) parts.push(dd.error);
