@@ -1,56 +1,55 @@
-# Doba — Local AI Personal Assistant
+# Doba — Personal AI Assistant
 
-Doba is a fully local, JARVIS-style personal AI system. It runs on your machine using [Ollama](https://ollama.com) for inference — no cloud APIs, no telemetry, no subscriptions.
-
-Ask it to manage your todos, take notes, or answer questions. The AI agent picks the right tool, executes it, and streams every step back to you in real time.
+Doba is a JARVIS-style personal AI assistant with a pluggable LLM backend. It supports both **Ollama** (fully local, free) and **OpenRouter** (cloud, pay-per-use). Ask it to manage your todos, write notes, or answer questions. A smart router classifies every query and picks the most efficient execution path — from a direct answer to a coordinated multi-agent plan.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    User["Browser"]
+    User["Browser / WebSocket client"]
 
     subgraph Backend["Backend — Bun / Hono / TypeScript"]
         WS["Hono WebSocket\n/chat/ws"]
-        REST["Hono REST\n/v1/todos, /notes, /chats, /ollama"]
+        REST["Hono REST\n/v1/*"]
 
-        subgraph Context["Context Assembly (before each router call)"]
+        subgraph Context["Context Assembly"]
             AssemblePrompt["assembleRouterPrompt()"]
-            Tier2["Tier 2 — Warm Context\nchats.summary\n(compacted older messages)"]
-            Tier1["Tier 1 — Hot Context\nlast 12 messages verbatim"]
-            Query["Current user query"]
+            Tier2["Tier 2 — Warm\nchats.summary (LLM-compacted)"]
+            Tier1["Tier 1 — Hot\nlast 12 messages verbatim"]
         end
 
         subgraph Orchestra["Orchestra Layer"]
-            Router["OrchestraRouter\n(pi-agent-core Agent)\nclassifies query → picks mode"]
+            Router["Smart Router\n(pi-agent-core Agent)\nclassifies → picks mode"]
 
-            Mode1["Mode 1: respondDirectly\ngeneral knowledge, greetings\n1 LLM call"]
-            Mode2["Mode 2: dispatchToAgent\nsingle agent, straightforward task\n2 LLM calls"]
-            Mode3["Mode 3: planMultiStep\nindependent multi-agent tasks\nN+2 LLM calls"]
-            Mode4["Mode 4: callAgentAndObserve\nconditional / dependent logic\nrouter reasons between calls"]
+            Mode1["direct\nGeneral knowledge / greetings\n1 LLM call"]
+            Mode2["single\nOne agent, autonomous task\n2 LLM calls"]
+            Mode3["multi\nIndependent multi-agent plan\nN+2 LLM calls + synthesis"]
+            Mode4["observe\ncallAgentAndObserve\nrouter reasons between agent calls"]
 
-            Runner["OrchestraRunner\ndispatches plan steps\nparallel support"]
-            Synthesis["Synthesizer\ncombines multi-agent results"]
-            EventBus["EventBus\npub/sub lifecycle events"]
+            Runner["OrchestraRunner\nsequential + parallel steps\nshared ToolCache"]
+            Synthesis["Synthesizer\ncombines multi-step results\nuses THINKING_MODEL when steps required reasoning"]
+            EventBus["EventBus\npub/sub lifecycle events\n→ streamed to client + persisted to DB"]
+            EventBridge["event-bridge.ts\nbridgeAgentEvent()\nrunAgentWithGuards()\n10-turn cap + 60s timeout"]
         end
 
-        subgraph Compaction["Context Compaction (fire-and-forget, post-response)"]
-            TokenCheck{"tokens > 70%\nof context window?"}
-            Compact["compactMessages()\nLLM summarizes old messages\n→ stores summary in chats.summary"]
+        subgraph Safety["Safety Layer"]
+            ToolGuard["withCallGuard()\nper-tool call counter\ninjects stop message on repeat"]
+            IterCap["runAgentWithGuards()\n10-turn hard cap\n60s wall-clock timeout"]
         end
 
         subgraph Agents["Sub-Agents (pi-agent-core)"]
-            TodoAgent["TodoAgent"]
-            NotesAgent["NotesAgent"]
+            TodoAgent["TodoAgent\nWORKER_MODEL or THINKING_MODEL\nbased on router thinking_level"]
+            NotesAgent["NotesAgent\nWORKER_MODEL or THINKING_MODEL\nbased on router thinking_level"]
         end
 
         subgraph Tools["Tools (TypeBox-validated)"]
             TodoTools["createTodo / listTodos\nupdateTodo / deleteTodo"]
             NotesTools["createNote / listNotes\nupdateNote / deleteNote"]
+            ToolCache["ToolCache\ncaches read-only results\nwithin a single plan execution"]
         end
 
-        subgraph LLM["LLM Layer (pi-ai)"]
-            PiAI["completeSimple()\nOpenAI-compat streaming"]
+        subgraph LLM["LLM Layer (pi-ai / pi-agent-core)"]
+            Models["models.ts\nROUTER_MODEL\nWORKER_MODEL\nTHINKING_MODEL\nresolveApiKey()"]
         end
 
         subgraph DB["Database"]
@@ -58,183 +57,222 @@ flowchart TD
             PG["PostgreSQL\ntodos, notes, chats,\nmessages, events"]
         end
 
-        Ollama["Ollama\nlocal inference\n/v1 OpenAI-compat"]
+        LLMBackend["Ollama (local)\nor OpenRouter (cloud)\nselected via LLM_PROVIDER env var"]
     end
 
     User -->|"JSON over WebSocket"| WS
-
     WS --> AssemblePrompt
-    PG -->|"chat history + summary"| AssemblePrompt
-    Tier2 --> AssemblePrompt
-    Tier1 --> AssemblePrompt
-    Query --> AssemblePrompt
-    AssemblePrompt -->|"assembled prompt\n+ shouldCompact flag"| Router
+    PG -->|"history + summary"| AssemblePrompt
+    Tier2 & Tier1 --> AssemblePrompt
+    AssemblePrompt --> Router
 
-    Router --> Mode1
-    Router --> Mode2
-    Router --> Mode3
-    Router --> Mode4
+    Router --> Mode1 & Mode2 & Mode3 & Mode4
 
-    Mode2 --> TodoAgent
-    Mode2 --> NotesAgent
+    Mode2 -->|"thinking_level from router"| TodoAgent & NotesAgent
     Mode3 --> Runner
-    Runner --> TodoAgent
-    Runner --> NotesAgent
+    Runner -->|"thinking_level per step"| TodoAgent & NotesAgent
     Runner --> Synthesis
-
-    Mode4 -->|"call agent"| TodoAgent
-    Mode4 -->|"call agent"| NotesAgent
-    TodoAgent -->|"result"| Mode4
-    NotesAgent -->|"result"| Mode4
-    Mode4 -->|"reason → call again\nor respondDirectly"| Mode4
+    Mode4 -->|"inline agent calls"| TodoAgent & NotesAgent
 
     TodoAgent --> TodoTools
     NotesAgent --> NotesTools
-    TodoTools --> Drizzle
-    NotesTools --> Drizzle
+    TodoTools & NotesTools --> ToolCache
+    ToolCache --> Drizzle
     Drizzle --> PG
 
-    Router --> PiAI
-    TodoAgent --> PiAI
-    NotesAgent --> PiAI
-    Synthesis --> PiAI
-    Compact --> PiAI
-    PiAI --> Ollama
+    EventBridge --> EventBus
+    EventBus -->|"streamed events"| WS
+    EventBus -->|"bulk insert on response end"| PG
 
-    Mode1 -->|"answer"| WS
-    Mode2 -->|"result"| WS
-    Synthesis -->|"final answer"| WS
-    Mode4 -->|"final answer via\nrespondDirectly"| WS
-
-    WS -->|"after response"| TokenCheck
-    TokenCheck -->|"yes"| Compact
-    Compact -->|"summary saved"| PG
-
-    EventBus -->|"streamed JSON events"| WS
-    WS -->|"events + answers"| User
-
-    User -->|"REST"| REST
-    REST --> Drizzle
+    Models --> LLMBackend
+    ToolGuard --> TodoTools & NotesTools
+    IterCap --> TodoAgent & NotesAgent
 ```
 
-- **Hono** on **Bun** handles HTTP and WebSocket
-- **pi-agent-core** runs the agentic loop (LLM → tool call → observe → loop)
-- **pi-ai** provides a unified streaming API over Ollama's OpenAI-compatible endpoint
-- **Drizzle ORM** manages PostgreSQL with type-safe queries
-- **EventBus** streams lifecycle events (task start, tool selection, tool result, etc.) to the client in real time
-- **Three-tier context model** manages the router's context window:
-  - **Tier 1 (Hot)**: last 12 messages kept verbatim
-  - **Tier 2 (Warm)**: older messages compacted into a rolling summary via LLM
-  - Compaction triggers automatically (fire-and-forget) when token usage exceeds 70% of the context window
+### Routing Modes
 
-## Prerequisites
+| Mode | Tool | When used | Agents called |
+|---|---|---|---|
+| `direct` | `respondDirectly` | Greetings, general knowledge, no personal data needed | None |
+| `single` | `dispatchToAgent` | One agent, one task | 1 |
+| `multi` | `planMultiStep` | Multiple independent tasks | 2+ in parallel or sequence |
+| `observe` | `callAgentAndObserve` + `respondDirectly` | Conditional logic, result-dependent decisions | 1–N (inline in router loop) |
 
-- [Bun](https://bun.sh) (v1.1+)
-- [Docker](https://docs.docker.com/get-docker/) (for PostgreSQL)
-- [Ollama](https://ollama.com) running locally with a model pulled:
-  ```bash
-  ollama pull qwen3.5:4b
-  ollama pull qwen3.5:9b
-  ```
+### Dynamic Thinking Levels
+
+The router assigns a `thinking_level` per task (`"off"` / `"low"` / `"high"`). Agents and synthesis use `THINKING_MODEL` when the level is not `"off"`, `WORKER_MODEL` otherwise. Simple CRUD never touches the thinking model — you pay for deep reasoning only when the query genuinely needs it.
+
+| Level | When | Model used |
+|---|---|---|
+| `off` | CRUD, lookups, formatting | WORKER_MODEL |
+| `low` | Cross-referencing, moderate analysis | THINKING_MODEL |
+| `high` | Deep planning, creative synthesis, trend analysis | THINKING_MODEL |
+
+### Safety Guarantees
+
+- **10-turn hard cap** — `runAgentWithGuards()` aborts an agent after 10 LLM turns
+- **60-second wall-clock timeout** — rejects with an error if the agent takes too long
+- **`withCallGuard()`** — per-tool repeat counter; injects a forced stop message after 2 calls on the same tool
+- **`callAgentAndObserve` guard** — router's inline agent tool is capped at 5 calls per request
+- **Compaction chaining** — successive context compactions extend the existing summary rather than overwriting it, preventing early history loss
+
+---
 
 ## Quick Start
 
+### Option A — OpenRouter (cloud)
+
+No local GPU required. Get an API key at [openrouter.ai](https://openrouter.ai).
+
 ```bash
-# 1. Clone and enter the project
+# 1. Clone and set up
 git clone <repo-url> doba-assistant
 cd doba-assistant
-
-# 2. Full setup: start DB, install deps, run migrations
 make setup
 
-# 3. Start the dev server
+# 2. Configure
+cp backend-ts/.env.example backend-ts/.env
+# Edit .env:
+#   LLM_PROVIDER=openrouter
+#   OPENROUTER_API_KEY=sk-or-...
+#   OPENROUTER_ROUTER_MODEL=qwen/qwen3-235b-a22b-2507
+#   OPENROUTER_WORKER_MODEL=qwen/qwen3-30b-a3b
+#   OPENROUTER_THINKING_MODEL=qwen/qwq-32b
+
+# 3. Start
 make dev
 ```
 
-The server starts at **http://localhost:3001**. Open these in your browser:
+### Option B — Ollama (local, free)
+
+Requires a machine with enough VRAM (or CPU RAM for smaller models).
+
+```bash
+# Install Ollama and pull models
+ollama pull qwen3:8b
+ollama pull qwen3:8b   # or any OpenAI-compat model
+
+# Configure .env
+#   LLM_PROVIDER=ollama
+#   OLLAMA_BASE_URL=http://localhost:11434/v1
+
+make setup && make dev
+```
+
+The server starts at **http://localhost:3001**.
 
 | URL | What |
 |-----|------|
-| [localhost:3001/playground](http://localhost:3001/playground) | Interactive chat + event bus viewer |
-| [localhost:3001/swagger](http://localhost:3001/swagger) | Swagger UI for all REST endpoints |
-| [localhost:3001/health](http://localhost:3001/health) | Health check |
+| [/playground](http://localhost:3001/playground) | Chat UI + live event bus viewer |
+| [/swagger](http://localhost:3001/swagger) | Swagger UI for all REST endpoints |
+| [/health](http://localhost:3001/health) | Health check |
+
+---
 
 ## Project Structure
 
 ```
 doba-assistant/
-├── Makefile                  # Dev commands (make dev, make test, etc.)
-├── docker-compose.yml        # PostgreSQL 16
-├── REFACTOR.md               # Full architecture document
+├── Makefile
+├── docker-compose.yml          # PostgreSQL 16
 └── backend-ts/
-    ├── package.json
-    ├── drizzle.config.ts
+    ├── .env                    # Environment config (provider, API keys, model IDs)
     └── src/
-        ├── server.ts                    # Hono app, middleware, route mounting
+        ├── server.ts           # Hono app, middleware, route mounting
         ├── routes/
-        │   ├── chat.ts                  # WebSocket handler + REST chat CRUD
-        │   ├── todos.ts                 # REST todo CRUD
-        │   ├── notes.ts                 # REST notes CRUD
-        │   ├── ollama.ts               # Ollama model management (stats, load, unload)
-        │   ├── swagger.ts               # OpenAPI spec + Swagger UI
-        │   └── playground.ts            # Browser test page
+        │   ├── chat.ts         # WebSocket handler + REST chat CRUD + event retrieval
+        │   ├── todos.ts        # REST todo CRUD
+        │   ├── notes.ts        # REST notes CRUD
+        │   ├── ollama.ts       # Provider info, active models, OpenRouter credits
+        │   ├── swagger.ts      # OpenAPI spec + Swagger UI
+        │   └── playground.ts   # Browser playground (chat + event bus viewer)
         ├── orchestra/
-        │   ├── index.ts                 # run() — main orchestration entry point
-        │   ├── router.ts               # Smart 4-mode router (respondDirectly / dispatchToAgent / planMultiStep / callAgentAndObserve)
-        │   ├── runner.ts               # Multi-step plan executor (sequential + parallel)
-        │   ├── synthesis.ts            # Final answer synthesis for multi-agent results
-        │   └── events.ts               # EventBus + event type definitions
+        │   ├── index.ts        # run() — main orchestration entry point
+        │   ├── router.ts       # Smart 4-mode router with thinking_level + call guard
+        │   ├── runner.ts       # Plan executor (sequential + parallel, ToolCache)
+        │   ├── synthesis.ts    # Multi-agent result synthesis (THINKING_MODEL-aware)
+        │   ├── context.ts      # Context assembly + compaction chaining
+        │   ├── event-bridge.ts # bridgeAgentEvent() + runAgentWithGuards()
+        │   ├── events.ts       # EventBus + EventType definitions
+        │   ├── usage.ts        # CallUsage type + token/cost aggregation helpers
+        │   └── tool-cache.ts   # Read-only tool result cache (per plan execution)
         ├── agents/
-        │   ├── registry.ts             # Agent registry (name → factory)
+        │   ├── registry.ts     # Agent registry (name → factory)
+        │   ├── tool-guard.ts   # withCallGuard() — per-tool repeat limiter
         │   └── personal/
-        │       ├── todo-agent.ts       # TodoAgent definition
-        │       └── notes-agent.ts      # NotesAgent definition
+        │       ├── todo-agent.ts   # TodoAgent (WORKER or THINKING model)
+        │       └── notes-agent.ts  # NotesAgent (WORKER or THINKING model)
         ├── tools/
         │   └── personal/
-        │       ├── todo-tools.ts       # createTodo, listTodos, updateTodo, deleteTodo
-        │       └── notes-tools.ts      # createNote, listNotes, updateNote, deleteNote
+        │       ├── todo-tools.ts   # createTodo, listTodos, updateTodo, deleteTodo
+        │       └── notes-tools.ts  # createNote, listNotes, updateNote, deleteNote
         ├── llm/
-        │   ├── models.ts              # Ollama model definitions (ROUTER, WORKER, THINKING)
-        │   └── preload.ts             # Warm models into VRAM at startup
+        │   ├── models.ts       # ROUTER/WORKER/THINKING_MODEL, resolveApiKey(), ThinkingLevel
+        │   └── preload.ts      # Ollama VRAM warm-up (skipped for OpenRouter)
         ├── db/
-        │   ├── schema.ts              # Drizzle schema (todos, chats, messages, events, notes)
-        │   └── client.ts              # Database connection
+        │   ├── schema.ts       # Drizzle schema (todos, notes, chats, messages, events)
+        │   └── client.ts       # DB connection
         └── test/
-            └── smoke.test.ts          # EventBus, DB, and pi-ai integration tests
+            └── smoke.test.ts   # EventBus, DB, and pi-ai integration tests
 ```
 
-## Make Targets
+---
 
+## Configuration
+
+All environment variables in `backend-ts/.env`:
+
+```bash
+# Database
+DATABASE_URL=postgres://doba:doba@localhost:5432/doba
+
+# Provider — "ollama" or "openrouter"
+LLM_PROVIDER=openrouter
+
+# Ollama (used when LLM_PROVIDER=ollama)
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_API_KEY=ollama
+
+# OpenRouter (used when LLM_PROVIDER=openrouter)
+OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_ROUTER_MODEL=qwen/qwen3-235b-a22b-2507   # intent classification
+OPENROUTER_WORKER_MODEL=qwen/qwen3-30b-a3b          # CRUD agents + synthesis
+OPENROUTER_THINKING_MODEL=qwen/qwq-32b              # deep reasoning (on demand)
+
+PORT=3001
 ```
-make setup           # Start DB + install deps + run migrations
-make dev             # Start the backend dev server
-make test            # Run tests
-make build           # Type-check (tsc --noEmit)
-make db              # Start PostgreSQL container
-make db-stop         # Stop PostgreSQL
-make db-reset        # Destroy and recreate DB volume
-make migrate         # Apply Drizzle migrations
-make migrate-generate # Generate migration from schema changes
-```
+
+### Model Roles
+
+| Role | Purpose | Default (OpenRouter) |
+|---|---|---|
+| `ROUTER_MODEL` | Query classification, mode selection | `qwen/qwen3-235b-a22b-2507` |
+| `WORKER_MODEL` | Agent execution, simple synthesis | `qwen/qwen3-30b-a3b` |
+| `THINKING_MODEL` | Deep analysis, planning, synthesis over complex results | `qwen/qwq-32b` |
+
+---
 
 ## API
 
 ### WebSocket — `/chat/ws`
 
-Connect via WebSocket. Send a JSON message, receive a stream of events:
+Send a JSON message, receive a stream of typed events:
 
 ```json
 // Send
-{ "message": "add buy milk to my todo list", "chat_id": 1 }
+{ "message": "add buy milk to my todos", "chat_id": 1 }
 
-// Receive (stream of events)
-{ "type": "orchestra_start", "source": "orchestra", "data": { "query": "..." }, "timestamp": "..." }
-{ "type": "tool_start", "source": "todo_agent", "data": { "tool": "createTodo", "args": { "title": "buy milk" } }, "timestamp": "..." }
-{ "type": "tool_end", "source": "todo_agent", "data": { "tool": "createTodo", "result": "..." }, "timestamp": "..." }
-{ "type": "orchestra_end", "source": "orchestra", "data": { "final_answer": "Done! I added 'buy milk' to your todo list." }, "timestamp": "..." }
+// Receive — stream of events
+{ "type": "orchestra_start",    "source": "orchestra",  "data": { "query": "..." } }
+{ "type": "task_generation_end","source": "orchestra",  "data": { "mode": "single", "agent": "todo_agent" } }
+{ "type": "agent_start",        "source": "todo_agent", "data": { "task": "..." } }
+{ "type": "tool_selection",     "source": "todo_agent", "data": { "tool": "createTodo", "args": {...} } }
+{ "type": "tool_end",           "source": "todo_agent", "data": { "tool": "createTodo", "result": "..." } }
+{ "type": "llm_call",           "source": "todo_agent", "data": { "model": "...", "input": 412, "output": 88, "cost": 0.00003 } }
+{ "type": "orchestra_end",      "source": "orchestra",  "data": { "final_answer": "Done!", "mode": "single", "usage": {...} } }
 ```
 
-### REST
+### REST Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -251,35 +289,46 @@ Connect via WebSocket. Send a JSON message, receive a stream of events:
 | GET | `/v1/chats/:id` | Get chat with messages |
 | DELETE | `/v1/chats/:id` | Delete a chat |
 | PUT | `/v1/chats/:id/title` | Rename a chat |
-| GET | `/v1/ollama/stats` | Running models and VRAM usage |
-| GET | `/v1/ollama/models` | List available Ollama models |
-| POST | `/v1/ollama/load` | Load a model into VRAM |
-| POST | `/v1/ollama/unload` | Unload a model from VRAM |
+| GET | `/v1/chats/:id/events` | Get persisted event log for a chat |
+| GET | `/v1/ollama/active-models` | Active model IDs (provider-agnostic) |
+| GET | `/v1/ollama/credits` | OpenRouter credit balance (OpenRouter only) |
+| GET | `/v1/ollama/stats` | Ollama running models + VRAM (Ollama only) |
+| GET | `/v1/ollama/models` | Available Ollama models (Ollama only) |
 
-## How It Works
+---
 
-1. **User sends a message** over WebSocket
-2. **Orchestra** emits `orchestra_start`
-3. **Smart Router** (an LLM-powered Agent with four tools) classifies the query into one of four modes:
-   - **Mode 1 — Direct Response**: general knowledge, greetings, conversational queries. The router answers directly (1 LLM call).
-   - **Mode 2 — Single Agent Dispatch**: the query maps to one agent (e.g. "add milk to my todos" → TodoAgent). The router dispatches and the agent runs its agentic loop (2 LLM calls).
-   - **Mode 3 — Multi-Step Plan**: the query requires multiple agents with independent tasks (e.g. "summarize my notes and create todos for action items"). The router builds a plan, the runner dispatches each step, and a synthesis LLM call combines the results.
-   - **Mode 4 — Adaptive Orchestration**: the query involves conditional logic or result-dependent decisions (e.g. "check my todos, if there's one about project X mark it done, otherwise create it"). The router calls agents one at a time, observes results, reasons about them, and decides the next action — all within its own agentic loop. After all needed calls, the router delivers a final synthesized answer.
-4. **Agents** run their agentic loop via pi-agent-core: LLM → tool call → observe → loop until done
-5. **Tools** execute Drizzle queries against PostgreSQL
-6. **EventBus** streams every lifecycle event to the WebSocket client in real time
-7. **Orchestra** extracts the final answer and emits `orchestra_end`
-8. Messages are persisted to the database
-
-## Configuration
-
-Environment variables in `backend-ts/.env`:
+## Make Targets
 
 ```
-DATABASE_URL=postgres://doba:doba@localhost:5432/doba
-OLLAMA_BASE_URL=http://localhost:11434/v1
-PORT=3001
+make setup            # Start DB + install deps + run migrations
+make dev              # Start the backend dev server
+make test             # Run smoke tests
+make build            # Type-check (tsc --noEmit)
+make db               # Start PostgreSQL container
+make db-stop          # Stop PostgreSQL
+make db-reset         # Destroy and recreate the DB volume
+make migrate          # Apply pending Drizzle migrations
+make migrate-generate # Generate a migration from schema changes
 ```
+
+---
+
+## How a Request Flows
+
+1. User sends a message over WebSocket
+2. **Context assembler** builds the router prompt from the conversation summary (Tier 2) and the last 12 messages (Tier 1)
+3. **Smart Router** (an LLM-powered agent with 4 tools) classifies the query and picks a mode:
+   - **direct** — answers from general knowledge; 1 LLM call
+   - **single** — dispatches to one agent with an optional `thinking_level`; agent runs its loop
+   - **multi** — builds a step plan; runner executes steps (sequential or parallel) with a shared `ToolCache`; synthesizer combines results
+   - **observe** — calls agents inline one at a time, observes results, reasons, calls again if needed, then delivers a final synthesized answer
+4. **Agents** (pi-agent-core) run: LLM → tool call → observe result → loop until done or guard fires
+5. **Safety guards** run alongside: 10-turn cap, 60s timeout, per-tool repeat limiter
+6. **EventBus** streams every lifecycle event to the client in real time
+7. After the response, all events are bulk-persisted to the `events` table for debugging
+8. If token usage exceeds 70% of the context window, compaction runs fire-and-forget, extending the existing summary rather than replacing it
+
+---
 
 ## Roadmap
 
