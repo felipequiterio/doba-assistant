@@ -1,5 +1,10 @@
 import { Agent } from "@mariozechner/pi-agent-core";
-import { WORKER_MODEL, resolveApiKey } from "../../llm/models";
+import {
+  WORKER_MODEL,
+  THINKING_MODEL,
+  resolveApiKey,
+  type ThinkingLevel,
+} from "../../llm/models";
 import {
   createNoteTool,
   listNotesTool,
@@ -27,15 +32,20 @@ Tool usage:
 
 After each tool call, respond with a clear, concise confirmation using the REAL data from the tool result.`;
 
-export function createNotesAgent(cache?: ToolCache): Agent {
+export function createNotesAgent(
+  cache?: ToolCache,
+  thinkingLevel: ThinkingLevel = "off"
+): Agent {
+  const usesThinking = thinkingLevel !== "off";
+  const model = usesThinking ? THINKING_MODEL : WORKER_MODEL;
   const baseTools = [createNoteTool, listNotesTool, updateNoteTool, deleteNoteTool];
   const cachedTools = cache ? wrapToolsWithCache(baseTools, cache) : baseTools;
   return new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
-      model: WORKER_MODEL,
+      model,
       tools: withCallGuard(cachedTools),
-      thinkingLevel: "off",
+      thinkingLevel,
     },
     getApiKey: resolveApiKey,
   });
