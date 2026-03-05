@@ -6,6 +6,13 @@ import type { Model, OpenAICompletionsCompat } from "@mariozechner/pi-ai";
 
 export type LlmProvider = "ollama" | "openrouter";
 
+/**
+ * Re-exported from pi-agent-core so callers don't need a direct dependency.
+ * Full range: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+ * Practical values used in this system: "off" (CRUD), "low" (analysis), "high" (deep reasoning)
+ */
+export type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+
 export const LLM_PROVIDER: LlmProvider =
   (process.env.LLM_PROVIDER as LlmProvider) || "ollama";
 
