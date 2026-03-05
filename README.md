@@ -4,89 +4,126 @@ Doba is a JARVIS-style personal AI assistant with a pluggable LLM backend. It su
 
 ## Architecture
 
+### Request Flow
+
 ```mermaid
 flowchart TD
-    User["Browser / WebSocket client"]
+    User["Browser"] --> WS
+    User --> REST
 
-    subgraph Backend["Backend — Bun / Hono / TypeScript"]
-        WS["Hono WebSocket\n/chat/ws"]
-        REST["Hono REST\n/v1/*"]
-
-        subgraph Context["Context Assembly"]
-            AssemblePrompt["assembleRouterPrompt()"]
-            Tier2["Tier 2 — Warm\nchats.summary (LLM-compacted)"]
-            Tier1["Tier 1 — Hot\nlast 12 messages verbatim"]
-        end
-
-        subgraph Orchestra["Orchestra Layer"]
-            Router["Smart Router\n(pi-agent-core Agent)\nclassifies → picks mode"]
-
-            Mode1["direct\nGeneral knowledge / greetings\n1 LLM call"]
-            Mode2["single\nOne agent, autonomous task\n2 LLM calls"]
-            Mode3["multi\nIndependent multi-agent plan\nN+2 LLM calls + synthesis"]
-            Mode4["observe\ncallAgentAndObserve\nrouter reasons between agent calls"]
-
-            Runner["OrchestraRunner\nsequential + parallel steps\nshared ToolCache"]
-            Synthesis["Synthesizer\ncombines multi-step results\nuses THINKING_MODEL when steps required reasoning"]
-            EventBus["EventBus\npub/sub lifecycle events\n→ streamed to client + persisted to DB"]
-            EventBridge["event-bridge.ts\nbridgeAgentEvent()\nrunAgentWithGuards()\n10-turn cap + 60s timeout"]
-        end
-
-        subgraph Safety["Safety Layer"]
-            ToolGuard["withCallGuard()\nper-tool call counter\ninjects stop message on repeat"]
-            IterCap["runAgentWithGuards()\n10-turn hard cap\n60s wall-clock timeout"]
-        end
-
-        subgraph Agents["Sub-Agents (pi-agent-core)"]
-            TodoAgent["TodoAgent\nWORKER_MODEL or THINKING_MODEL\nbased on router thinking_level"]
-            NotesAgent["NotesAgent\nWORKER_MODEL or THINKING_MODEL\nbased on router thinking_level"]
-        end
-
-        subgraph Tools["Tools (TypeBox-validated)"]
-            TodoTools["createTodo / listTodos\nupdateTodo / deleteTodo"]
-            NotesTools["createNote / listNotes\nupdateNote / deleteNote"]
-            ToolCache["ToolCache\ncaches read-only results\nwithin a single plan execution"]
-        end
-
-        subgraph LLM["LLM Layer (pi-ai / pi-agent-core)"]
-            Models["models.ts\nROUTER_MODEL\nWORKER_MODEL\nTHINKING_MODEL\nresolveApiKey()"]
-        end
-
-        subgraph DB["Database"]
-            Drizzle["Drizzle ORM"]
-            PG["PostgreSQL\ntodos, notes, chats,\nmessages, events"]
-        end
-
-        LLMBackend["Ollama (local)\nor OpenRouter (cloud)\nselected via LLM_PROVIDER env var"]
+    subgraph API["API Layer · Bun / Hono"]
+        WS["chat.ts\nWebSocket /chat/ws"]
+        REST["REST /v1/*\ntodos · notes · chats · events"]
     end
 
-    User -->|"JSON over WebSocket"| WS
-    WS --> AssemblePrompt
-    PG -->|"history + summary"| AssemblePrompt
-    Tier2 & Tier1 --> AssemblePrompt
-    AssemblePrompt --> Router
+    REST --> Drizzle
 
-    Router --> Mode1 & Mode2 & Mode3 & Mode4
+    WS --> ChatHandler["chat.ts handler\nloads history + summary from DB\ncollects events during request\npersists messages + events after response"]
+    ChatHandler --> Context
 
-    Mode2 -->|"thinking_level from router"| TodoAgent & NotesAgent
-    Mode3 --> Runner
-    Runner -->|"thinking_level per step"| TodoAgent & NotesAgent
-    Runner --> Synthesis
-    Mode4 -->|"inline agent calls"| TodoAgent & NotesAgent
+    subgraph Context["Context Assembly · context.ts"]
+        direction LR
+        Summary["chats.summary\nwarm · LLM-compacted"]
+        Recent["last 12 messages\nhot · verbatim"]
+        Query["current query"]
+    end
 
-    TodoAgent --> TodoTools
-    NotesAgent --> NotesTools
-    TodoTools & NotesTools --> ToolCache
-    ToolCache --> Drizzle
-    Drizzle --> PG
+    Context --> Orch
 
-    EventBridge --> EventBus
-    EventBus -->|"streamed events"| WS
-    EventBus -->|"bulk insert on response end"| PG
+    subgraph Orch["Orchestra · index.ts run()"]
+        Router["Smart Router\nROUTER_MODEL · thinkingLevel off\nclassifies query · calls one of 4 tools"]
 
-    Models --> LLMBackend
-    ToolGuard --> TodoTools & NotesTools
-    IterCap --> TodoAgent & NotesAgent
+        Router --> Direct["direct\nrespondDirectly\ngeneral knowledge answer"]
+        Router --> Single["single\ndispatchToAgent + thinking_level\none agent, one task"]
+        Router --> Multi["multi\nplanMultiStep + thinking_level per step\nindependent parallel/sequential steps"]
+        Router --> Observe["observe\ncallAgentAndObserve x N\nagents run inside router loop\nthen respondDirectly with synthesis"]
+    end
+
+    Single --> AgentExec
+    Multi --> Runner["Runner · runner.ts\nshared ToolCache\nsequential + parallel"]
+    Runner --> AgentExec
+    Runner --> Synth["Synthesizer · synthesis.ts\nWORKER or THINKING_MODEL\nselected by usedThinking flag"]
+
+    subgraph AgentExec["Agent Execution · pi-agent-core loop"]
+        direction TB
+        Agent["Agent\noff → WORKER_MODEL · low/high → THINKING_MODEL\n10-turn cap · 60s timeout"]
+        Agent --> Tools
+        Tools --> Agent
+
+        subgraph Tools["Tools · TypeBox-validated · withCallGuard max 2 repeats"]
+            direction LR
+            TodoTools["createTodo · listTodos\nupdateTodo · deleteTodo"]
+            NotesTools["createNote · listNotes\nupdateNote · deleteNote"]
+        end
+    end
+
+    Observe --> AgentExec2["Agent runs inline\ninside router agent loop\nsame guards apply"]
+
+    Tools --> Cache["ToolCache\ndeduplicates reads within one request"]
+    Cache --> Drizzle["Drizzle ORM"]
+    Drizzle --> PG[("PostgreSQL\ntodos · notes · chats\nmessages · events")]
+
+    subgraph LLM["LLM Provider · models.ts"]
+        direction LR
+        Models["ROUTER_MODEL\nWORKER_MODEL\nTHINKING_MODEL"]
+        Models --> Provider["Ollama local\nor OpenRouter cloud"]
+    end
+
+    Router -.-> Provider
+    Agent -.-> Provider
+    Synth -.-> Provider
+
+    subgraph Events["Event System · events.ts"]
+        EB["EventBus singleton\nstreams events in real-time"]
+    end
+
+    EB --> WS
+    Agent -.-> EB
+    Router -.-> EB
+
+    Direct --> Orch
+    Single --> Orch
+    Synth --> Orch
+    Observe --> Orch
+
+    Orch --> ChatHandler
+    ChatHandler --> PG
+
+    Orch --> Compact["Compaction · fire-and-forget\nif tokens > 70% context window\nLLM summarizes old messages\nchains with existing summary"]
+    Compact -.-> Provider
+    Compact --> PG
+
+    PG --> ChatHandler
+```
+
+### How the four modes differ
+
+```mermaid
+flowchart LR
+    subgraph direct["direct · 1 LLM call"]
+        R1["Router"] --> Out1["respondDirectly\nanswer → user"]
+    end
+
+    subgraph single["single · 2+ LLM calls"]
+        R2["Router"] --> A2["dispatchToAgent\nAgent loop: LLM → tool → LLM"]
+        A2 --> Out2["answer → user"]
+    end
+
+    subgraph multi["multi · N+2 LLM calls"]
+        R3["Router"] --> Run3["planMultiStep\nRunner"]
+        Run3 --> A3a["Agent A"]
+        Run3 --> A3b["Agent B"]
+        A3a --> Syn3["Synthesizer"]
+        A3b --> Syn3
+        Syn3 --> Out3["answer → user"]
+    end
+
+    subgraph observe["observe · variable LLM calls"]
+        R4["Router loop"] --> A4["callAgentAndObserve\nAgent runs inside router"]
+        A4 --> R4b["Router reasons\ncall again or done?"]
+        R4b --> A4
+        R4b --> Out4["respondDirectly\nanswer → user"]
+    end
 ```
 
 ### Routing Modes
