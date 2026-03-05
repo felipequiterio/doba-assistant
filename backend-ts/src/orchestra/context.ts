@@ -17,11 +17,6 @@ const COMPACTION_THRESHOLD = 0.7;
 const COMPACTION_SYSTEM_PROMPT =
   "You are a conversation summarizer. Produce concise, factual summaries.";
 
-const COMPACTION_USER_PROMPT = `Summarize the following conversation history into 2-3 concise paragraphs, preserving all important facts, decisions made, and action items. Focus on what would be useful for continuing the conversation.
-
-Conversation:
-`;
-
 /**
  * Rough token estimate: ~4 characters per token for English text.
  * Sufficient for triggering compaction decisions.
@@ -71,8 +66,7 @@ export function assembleRouterPrompt(
 
   const prompt = parts.join("\n\n");
 
-  const totalText = prompt + (ROUTER_MODEL.contextWindow ? "" : "");
-  const estimatedTokens = estimateTokens(totalText);
+  const estimatedTokens = estimateTokens(prompt);
   const threshold = Math.floor(contextWindow * COMPACTION_THRESHOLD);
   const shouldCompact =
     history.length > HOT_MESSAGE_COUNT && estimatedTokens > threshold;
@@ -82,11 +76,29 @@ export function assembleRouterPrompt(
 
 /**
  * Summarizes old messages into 2-3 paragraphs using the worker model.
+ * When an existing summary is provided, the new summary extends it rather
+ * than replacing it — preserving facts from earlier compaction cycles.
  */
 export async function compactMessages(
-  oldMessages: DbMessage[]
+  oldMessages: DbMessage[],
+  existingSummary?: string
 ): Promise<string> {
   const conversationText = formatChatHistory(oldMessages);
+
+  const promptText = existingSummary
+    ? `You have an existing summary of an earlier part of this conversation:
+
+[EXISTING SUMMARY]
+${existingSummary}
+
+Now extend that summary to include the following additional conversation history. Preserve all facts from the existing summary and incorporate the new information. Output a single updated summary of 3-4 concise paragraphs.
+
+[NEW CONVERSATION TO ADD]
+${conversationText}`
+    : `Summarize the following conversation history into 2-3 concise paragraphs, preserving all important facts, decisions made, and action items. Focus on what would be useful for continuing the conversation.
+
+Conversation:
+${conversationText}`;
 
   const response = await completeSimple(
     WORKER_MODEL,
@@ -95,12 +107,7 @@ export async function compactMessages(
       messages: [
         {
           role: "user" as const,
-          content: [
-            {
-              type: "text" as const,
-              text: `${COMPACTION_USER_PROMPT}${conversationText}`,
-            },
-          ],
+          content: [{ type: "text" as const, text: promptText }],
           timestamp: Date.now(),
         },
       ],
@@ -117,11 +124,14 @@ export async function compactMessages(
 
 /**
  * Runs compaction for a chat: summarizes old messages and stores the summary.
+ * Passes the existing summary so successive compactions chain rather than
+ * overwrite, preventing loss of early conversation history.
  * Fire-and-forget — should be called without awaiting in the main flow.
  */
 export async function triggerCompaction(
   chatId: number,
-  history: DbMessage[]
+  history: DbMessage[],
+  existingSummary?: string
 ): Promise<void> {
   if (history.length <= HOT_MESSAGE_COUNT) return;
 
@@ -131,7 +141,7 @@ export async function triggerCompaction(
     message: `Compacting ${oldMessages.length} old messages for chat ${chatId}`,
   });
 
-  const summary = await compactMessages(oldMessages);
+  const summary = await compactMessages(oldMessages, existingSummary);
 
   await db
     .update(chats)
@@ -147,3 +157,6 @@ export async function triggerCompaction(
     message: `Compaction complete for chat ${chatId} (${oldMessages.length} messages summarized)`,
   });
 }
+
+// Re-export ROUTER_MODEL reference for consumers that need it
+export { ROUTER_MODEL };
