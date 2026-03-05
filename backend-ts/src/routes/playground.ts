@@ -739,6 +739,10 @@ playgroundApp.get("/playground", (c) => {
             <span class="footer-label">Cost</span>
             <span class="footer-value" id="costText">$0.000000</span>
           </div>
+          <div class="footer-group" id="creditsGroup" style="display:none">
+            <span class="footer-label">Credits</span>
+            <span class="footer-value" id="creditsText">--</span>
+          </div>
         </footer>
 
         <script>
@@ -759,6 +763,8 @@ playgroundApp.get("/playground", (c) => {
           const tokenText = document.getElementById("tokenText");
           const modeText = document.getElementById("modeText");
           const costText = document.getElementById("costText");
+          const creditsText = document.getElementById("creditsText");
+          const creditsGroup = document.getElementById("creditsGroup");
           const autoScrollCb = document.getElementById("autoScroll");
           const filterBar = document.getElementById("filterBar");
 
@@ -875,6 +881,7 @@ playgroundApp.get("/playground", (c) => {
               }
 
               setBusy(false);
+              fetchCredits();
             } else if (data.type === "error") {
               removeTyping();
               requestStartTime = null;
@@ -1241,6 +1248,26 @@ playgroundApp.get("/playground", (c) => {
             }
           }
 
+          async function fetchCredits() {
+            try {
+              var res = await fetch("/v1/ollama/credits");
+              var data = await res.json();
+              if (!data.supported) return;
+              creditsGroup.style.display = "";
+              var remaining = data.remaining;
+              creditsText.textContent = "$" + remaining.toFixed(4);
+              if (remaining < 0.05) {
+                creditsText.className = "footer-value error";
+              } else if (remaining < 0.20) {
+                creditsText.className = "footer-value warn";
+              } else {
+                creditsText.className = "footer-value active";
+              }
+            } catch {
+              // silently ignore — credits display is best-effort
+            }
+          }
+
           filterBar.addEventListener("click", function(e) {
             var chip = e.target.closest(".filter-chip");
             if (!chip) return;
@@ -1280,6 +1307,8 @@ playgroundApp.get("/playground", (c) => {
           connect();
           fetchModels();
           setInterval(fetchModels, 15000);
+          fetchCredits();
+          setInterval(fetchCredits, 60000);
         </script>
       </body>
     </html>`);

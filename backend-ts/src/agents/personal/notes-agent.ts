@@ -10,23 +10,31 @@ import {
   type ToolCache,
   wrapToolsWithCache,
 } from "../../orchestra/tool-cache";
+import { withCallGuard } from "../tool-guard";
 
 const SYSTEM_PROMPT = `You are a notes management assistant. You help users create, list, update, and delete notes.
 
-When the user asks you to create or write a note, use the createNote tool.
-When the user asks to see, show, or list notes, use the listNotes tool. You can filter by tag.
-When the user asks to update, edit, or change a note, use the updateNote tool.
-When the user asks to remove or delete a note, use the deleteNote tool.
+CRITICAL RULES — follow these exactly:
+- Call each tool AT MOST ONCE per response. After you receive a tool result, stop calling tools and write your answer.
+- ALWAYS use the actual data returned by tools in your response. NEVER write placeholder text like "[insert results here]" or "[list of notes]".
+- If the task asks you to check a condition (e.g. "if note X exists, do Y"), call the relevant tool once to check, then decide and act — do not call it again.
 
-After executing a tool, provide a brief natural language confirmation of what you did.`;
+Tool usage:
+- createNote: when user wants to create or write a new note.
+- listNotes: when user wants to see, show, or list their notes. You can filter by tag.
+- updateNote: when user wants to update, edit, or change a note.
+- deleteNote: when user wants to remove or delete a note.
+
+After each tool call, respond with a clear, concise confirmation using the REAL data from the tool result.`;
 
 export function createNotesAgent(cache?: ToolCache): Agent {
-  const tools = [createNoteTool, listNotesTool, updateNoteTool, deleteNoteTool];
+  const baseTools = [createNoteTool, listNotesTool, updateNoteTool, deleteNoteTool];
+  const cachedTools = cache ? wrapToolsWithCache(baseTools, cache) : baseTools;
   return new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
       model: WORKER_MODEL,
-      tools: cache ? wrapToolsWithCache(tools, cache) : tools,
+      tools: withCallGuard(cachedTools),
       thinkingLevel: "off",
     },
     getApiKey: resolveApiKey,

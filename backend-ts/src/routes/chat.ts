@@ -111,7 +111,21 @@ wsApp.get(
           })
         );
 
+        // Collect all events for this request to bulk-persist after completion
+        const collectedEvents: Array<{
+          type: string;
+          source: string;
+          data: Record<string, unknown>;
+          timestamp: Date;
+        }> = [];
+
         unsubscribe = eventBus.subscribe((orchestraEvent: OrchestraEvent) => {
+          collectedEvents.push({
+            type: orchestraEvent.type,
+            source: orchestraEvent.source,
+            data: orchestraEvent.data,
+            timestamp: new Date(orchestraEvent.timestamp),
+          });
           try {
             ws.send(JSON.stringify(orchestraEvent));
           } catch {
@@ -128,12 +142,12 @@ wsApp.get(
             content: result.finalAnswer,
           });
 
-          await db.insert(eventsTable).values({
-            chatId,
-            type: "orchestra_end",
-            source: result.agentName,
-            data: { final_answer: result.finalAnswer },
-          });
+          // Bulk-persist all collected events for this chat turn
+          if (collectedEvents.length > 0) {
+            await db.insert(eventsTable).values(
+              collectedEvents.map((e) => ({ chatId, ...e }))
+            );
+          }
         } catch (error) {
           const errorMsg =
             error instanceof Error ? error.message : "Unknown error";
@@ -207,6 +221,20 @@ chatsRestApp.delete("/:id", async (c) => {
     .returning();
   if (!deleted) return c.json({ error: "Chat not found" }, 404);
   return c.json({ success: true });
+});
+
+chatsRestApp.get("/:id/events", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const [chat] = await db.select({ id: chats.id }).from(chats).where(eq(chats.id, id));
+  if (!chat) return c.json({ error: "Chat not found" }, 404);
+
+  const chatEvents = await db
+    .select()
+    .from(eventsTable)
+    .where(eq(eventsTable.chatId, id))
+    .orderBy(asc(eventsTable.timestamp));
+
+  return c.json(chatEvents);
 });
 
 chatsRestApp.put("/:id/title", async (c) => {

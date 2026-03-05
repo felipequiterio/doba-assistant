@@ -16,6 +16,8 @@ export const EventType = {
   TOOL_START: "tool_start",
   TOOL_END: "tool_end",
   TOOL_ERROR: "tool_error",
+  /** Emitted after every LLM turn completes. Carries model, token usage, and tool calls made. */
+  LLM_CALL: "llm_call",
   RETRY: "retry",
   LOG: "log",
 } as const;

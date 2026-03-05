@@ -10,23 +10,31 @@ import {
   type ToolCache,
   wrapToolsWithCache,
 } from "../../orchestra/tool-cache";
+import { withCallGuard } from "../tool-guard";
 
 const SYSTEM_PROMPT = `You are a todo management assistant. You help users create, list, update, and delete todo items.
 
-When the user asks you to add or create a todo, use the createTodo tool.
-When the user asks to see, show, or list todos, use the listTodos tool.
-When the user asks to update, change, or mark a todo, use the updateTodo tool.
-When the user asks to remove or delete a todo, use the deleteTodo tool.
+CRITICAL RULES — follow these exactly:
+- Call each tool AT MOST ONCE per response. After you receive a tool result, stop calling tools and write your answer.
+- ALWAYS use the actual data returned by tools in your response. NEVER write placeholder text like "[insert results here]" or "[list of todos]".
+- If the task asks you to check a condition (e.g. "if todo X exists, do Y"), call the relevant tool once to check, then decide and act — do not call it again.
 
-After executing a tool, provide a brief natural language confirmation of what you did.`;
+Tool usage:
+- createTodo: when user wants to add or create a new todo item.
+- listTodos: when user wants to see, show, or list their todos. You can filter by status.
+- updateTodo: when user wants to update, change, mark, or complete a todo.
+- deleteTodo: when user wants to remove or delete a todo.
+
+After each tool call, respond with a clear, concise confirmation using the REAL data from the tool result.`;
 
 export function createTodoAgent(cache?: ToolCache): Agent {
-  const tools = [createTodoTool, listTodosTool, updateTodoTool, deleteTodoTool];
+  const baseTools = [createTodoTool, listTodosTool, updateTodoTool, deleteTodoTool];
+  const cachedTools = cache ? wrapToolsWithCache(baseTools, cache) : baseTools;
   return new Agent({
     initialState: {
       systemPrompt: SYSTEM_PROMPT,
       model: WORKER_MODEL,
-      tools: cache ? wrapToolsWithCache(tools, cache) : tools,
+      tools: withCallGuard(cachedTools),
       thinkingLevel: "off",
     },
     getApiKey: resolveApiKey,
