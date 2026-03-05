@@ -4,25 +4,41 @@ import {
   type AgentTool,
   type AgentEvent,
 } from "@mariozechner/pi-agent-core";
-import { ROUTER_MODEL, resolveApiKey } from "../llm/models";
+import { ROUTER_MODEL, resolveApiKey, type ThinkingLevel } from "../llm/models";
 import { agentRegistry, type AgentDefinition } from "../agents/registry";
 import { assembleRouterPrompt } from "./context";
 import { eventBus, EventType } from "./events";
+import { extractUsageFromMessages } from "./usage";
+import { bridgeAgentEvent, runAgentWithGuards } from "./event-bridge";
+import { withCallGuard } from "../agents/tool-guard";
 import type { ChatContext } from "./index";
 
 // --- Routing result types ---
 
-export type RouteMode = "direct" | "single" | "multi";
+export type RouteMode = "direct" | "single" | "multi" | "observe";
 
 export interface DirectRouteResult {
   mode: "direct";
   content: string;
 }
 
+/**
+ * Router used callAgentAndObserve one or more times, then synthesized a final
+ * answer with respondDirectly. The content is the synthesized answer; agentNames
+ * lists which agents were called during observation.
+ */
+export interface ObserveRouteResult {
+  mode: "observe";
+  content: string;
+  agentNames: string[];
+}
+
 export interface SingleAgentRouteResult {
   mode: "single";
   agentName: string;
   task: string;
+  /** Requested reasoning depth for the dispatched agent. Defaults to "off". */
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface MultiStepRouteResult {
@@ -35,10 +51,13 @@ export interface PlanStep {
   task: string;
   expected_output: string;
   is_async?: boolean;
+  /** Requested reasoning depth for this specific step. Defaults to "off". */
+  thinking_level?: ThinkingLevel;
 }
 
 export type RouteResult =
   | DirectRouteResult
+  | ObserveRouteResult
   | SingleAgentRouteResult
   | MultiStepRouteResult;
 
@@ -55,6 +74,20 @@ interface RouterState {
 
 // --- Tool parameter schemas (immutable, shared across requests) ---
 
+const thinkingLevelSchema = Type.Optional(
+  Type.Union(
+    [
+      Type.Literal("off"),
+      Type.Literal("low"),
+      Type.Literal("high"),
+    ],
+    {
+      description:
+        'Reasoning depth for this task. Use "off" for simple CRUD and lookups. Use "low" for cross-referencing, conditional logic, or moderate analysis. Use "high" for trend analysis, deep planning, ambiguous intent, or creative synthesis. Defaults to "off".',
+    }
+  )
+);
+
 const respondDirectlyParams = Type.Object({
   content: Type.String({
     description:
@@ -70,6 +103,7 @@ const dispatchToAgentParams = Type.Object({
     description:
       "A clear, specific task description for the agent. Rephrase the user's intent into an actionable instruction.",
   }),
+  thinking_level: thinkingLevelSchema,
 });
 
 const planStepSchema = Type.Object({
@@ -84,6 +118,7 @@ const planStepSchema = Type.Object({
         "If true, this step can run in parallel with other async steps. Default false (sequential).",
     })
   ),
+  thinking_level: thinkingLevelSchema,
 });
 
 const planMultiStepParams = Type.Object({
@@ -118,52 +153,6 @@ function extractAgentFinalAnswer(messages: any[]): string {
   return "Task completed but no text response.";
 }
 
-function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
-  switch (event.type) {
-    case "tool_execution_start":
-      eventBus.emit(EventType.TOOL_SELECTION, agentName, {
-        tool: event.toolName,
-        args: event.args,
-      });
-      eventBus.emit(EventType.TOOL_START, agentName, {
-        tool: event.toolName,
-        args: event.args,
-      });
-      break;
-    case "tool_execution_end":
-      if (event.isError) {
-        eventBus.emit(EventType.TOOL_ERROR, agentName, {
-          tool: event.toolName,
-          error: event.result,
-        });
-      } else {
-        eventBus.emit(EventType.TOOL_END, agentName, {
-          tool: event.toolName,
-          result: event.result,
-        });
-      }
-      break;
-    case "turn_end": {
-      const msg = event.message as any;
-      const toolCalls = Array.isArray(msg.content)
-        ? msg.content
-            .filter((c: any) => c.type === "toolCall")
-            .map((c: any) => c.name)
-        : [];
-      eventBus.emit(EventType.LLM_CALL, agentName, {
-        model: msg.model ?? "unknown",
-        provider: msg.provider ?? "unknown",
-        input: msg.usage?.input ?? 0,
-        output: msg.usage?.output ?? 0,
-        cache_read: msg.usage?.cacheRead ?? 0,
-        cost: msg.usage?.cost?.total ?? 0,
-        tool_calls: toolCalls,
-      });
-      break;
-    }
-  }
-}
-
 // --- Tool factory (creates tools bound to a per-request RouterState) ---
 
 function createRouterTools(state: RouterState): AgentTool<any>[] {
@@ -174,10 +163,20 @@ function createRouterTools(state: RouterState): AgentTool<any>[] {
       "Use this when the query can be answered from general knowledge, is a greeting, conversational small talk, or does not require any agent. Also use this to deliver the final answer AFTER calling callAgentAndObserve one or more times.",
     parameters: respondDirectlyParams,
     async execute(_toolCallId, params) {
-      state.capturedRoute = { mode: "direct", content: params.content };
+      if (state.agentCallResults.length > 0) {
+        // callAgentAndObserve was used before this — mark as observe mode so
+        // callers can distinguish "router answered directly" from "router observed agents then synthesized"
+        state.capturedRoute = {
+          mode: "observe",
+          content: params.content,
+          agentNames: [...new Set(state.agentCallResults.map((r) => r.agentName))],
+        };
+      } else {
+        state.capturedRoute = { mode: "direct", content: params.content };
+      }
       return {
         content: [{ type: "text", text: params.content }],
-        details: { mode: "direct" },
+        details: { mode: state.capturedRoute.mode },
       };
     },
   };
@@ -193,6 +192,7 @@ function createRouterTools(state: RouterState): AgentTool<any>[] {
         mode: "single",
         agentName: params.agent_name,
         task: params.task,
+        thinkingLevel: params.thinking_level ?? "off",
       };
       return {
         content: [
@@ -226,7 +226,7 @@ function createRouterTools(state: RouterState): AgentTool<any>[] {
     },
   };
 
-  const callAgentAndObserveTool: AgentTool<
+  const callAgentAndObserveToolBase: AgentTool<
     typeof callAgentAndObserveParams
   > = {
     name: "callAgentAndObserve",
@@ -258,7 +258,7 @@ function createRouterTools(state: RouterState): AgentTool<any>[] {
       });
 
       try {
-        await agent.prompt(params.task);
+        await runAgentWithGuards(agent, params.task, params.agent_name);
         const result = extractAgentFinalAnswer(agent.state.messages);
 
         eventBus.emit(EventType.AGENT_END, params.agent_name, { result });
@@ -288,11 +288,18 @@ function createRouterTools(state: RouterState): AgentTool<any>[] {
     },
   };
 
+  // Guard callAgentAndObserve with maxRepeat=5 to prevent the router from
+  // calling agents indefinitely in observe mode.
+  const [guardedCallAgentAndObserve] = withCallGuard(
+    [callAgentAndObserveToolBase],
+    5
+  );
+
   return [
     respondDirectlyTool,
     dispatchToAgentTool,
     planMultiStepTool,
-    callAgentAndObserveTool,
+    guardedCallAgentAndObserve,
   ];
 }
 
@@ -312,11 +319,11 @@ ${agentDescriptions}
 
 You MUST call exactly ONE tool to begin handling every query. Your four tools are:
 
-1. respondDirectly — For greetings, general knowledge, conversational messages, or anything answerable without agents.
+1. respondDirectly — ONLY for greetings, chitchat, general knowledge questions, or meta questions about the assistant itself. NEVER use this when the query involves the user's todos or notes, even if you think you already know the answer from previous conversation turns.
 
-2. dispatchToAgent — For queries that clearly map to ONE agent with a straightforward task. The agent handles it autonomously and its response goes directly to the user. Most requests use this.
+2. dispatchToAgent — For queries that clearly map to ONE agent. The agent fetches fresh data and handles the task autonomously. Use this for listing, creating, updating, deleting, or analyzing todos/notes.
 
-3. planMultiStep — For queries needing MULTIPLE agents with INDEPENDENT tasks that don't depend on each other's results.
+3. planMultiStep — For queries needing MULTIPLE agents with INDEPENDENT tasks that do not depend on each other's results.
 
 4. callAgentAndObserve — For queries where the NEXT ACTION DEPENDS ON A PREVIOUS RESULT. This tool executes an agent and returns the result to you so you can reason about it. Use this when:
    - The query has conditional logic ("if X exists then Y, otherwise Z")
@@ -324,19 +331,27 @@ You MUST call exactly ONE tool to begin handling every query. Your four tools ar
    - Multiple steps depend on each other's outcomes
    After all needed agent calls, you MUST call respondDirectly with the final synthesized answer.
 
-Rules:
+Thinking level guidance (applies to dispatchToAgent.thinking_level and planMultiStep step thinking_level):
+- "off"  — Simple CRUD operations, lookups, formatting. The vast majority of requests. Fast and cheap.
+- "low"  — Cross-referencing data, conditional logic, moderate analysis, comparing multiple items.
+- "high" — Trend analysis, deep planning, ambiguous or complex intent, creative synthesis across many items.
+
+CRITICAL RULES:
 - ALWAYS call a tool. Never respond with plain text.
-- Prefer dispatchToAgent for simple single-agent tasks (most common).
+- NEVER answer questions about the user's todos or notes from conversation history. The data changes between turns. Always dispatch to the agent to fetch the current state.
+- Any query containing words like "list", "show", "what", "analyze", "summarize", "check" referring to todos or notes MUST go through dispatchToAgent or callAgentAndObserve — never respondDirectly.
+- Prefer dispatchToAgent for the vast majority of requests.
 - Use callAgentAndObserve when the query involves conditions, data inspection, or dependent decisions.
 - When using callAgentAndObserve: call agents → observe results → reason → call more agents if needed → respondDirectly with the final answer.
 - Agent names must exactly match one of the available agents listed above.
 
 Examples:
 - "hello" → respondDirectly("Hello! How can I help?")
-- "add milk to my todos" → dispatchToAgent("todo_agent", "Add 'milk' to the todo list")
-- "list my notes and create todos for action items" → planMultiStep([notes step, todo step])
-- "check my todos, if there's one about project X mark it done, otherwise create it" → callAgentAndObserve("todo_agent", "list all todos") → observe result → callAgentAndObserve("todo_agent", "mark/create...") → respondDirectly(summary)
-- "what notes and todos do I have? If I have a todo about Y, mark complete, else create one" → callAgentAndObserve("notes_agent", "list notes") → callAgentAndObserve("todo_agent", "list todos") → reason about results → callAgentAndObserve("todo_agent", "create/update...") → respondDirectly(final answer)`;
+- "add milk to my todos" → dispatchToAgent("todo_agent", "Add 'milk' to the todo list", thinking_level: "off")
+- "what todos do I have?" → dispatchToAgent("todo_agent", "List all todos", thinking_level: "off")  [NOT respondDirectly — must fetch fresh]
+- "analyze my todo productivity" → dispatchToAgent("todo_agent", "List all todos with their status", thinking_level: "low")  [NOT respondDirectly — must fetch fresh]
+- "list my notes and create todos for action items" → planMultiStep([notes step thinking_level:"off", todo step thinking_level:"off"])
+- "check my todos, if there's one about project X mark it done, otherwise create it" → callAgentAndObserve("todo_agent", "list all todos") → observe result → callAgentAndObserve("todo_agent", "mark/create...") → respondDirectly(summary)`;
 }
 
 // --- Router usage result ---
@@ -356,34 +371,6 @@ export interface RouteQueryResult {
   usage?: RouterUsage;
 }
 
-function extractUsage(
-  agentMessages: any[],
-  shouldCompact: boolean
-): RouterUsage | undefined {
-  let input = 0;
-  let output = 0;
-  let cacheRead = 0;
-  let cacheWrite = 0;
-  let totalTokens = 0;
-  let costTotal = 0;
-  let found = false;
-
-  for (const msg of agentMessages) {
-    if (msg.role === "assistant" && msg.usage) {
-      found = true;
-      input += msg.usage.input ?? 0;
-      output += msg.usage.output ?? 0;
-      cacheRead += msg.usage.cacheRead ?? 0;
-      cacheWrite += msg.usage.cacheWrite ?? 0;
-      totalTokens += msg.usage.totalTokens ?? 0;
-      costTotal += msg.usage.cost?.total ?? 0;
-    }
-  }
-
-  if (!found) return undefined;
-  return { input, output, cacheRead, cacheWrite, totalTokens, costTotal, shouldCompact };
-}
-
 function extractTextFromMessages(messages: any[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i] as any;
@@ -396,6 +383,15 @@ function extractTextFromMessages(messages: any[]): string | null {
     }
   }
   return null;
+}
+
+function buildRouterUsage(
+  messages: any[],
+  shouldCompact: boolean
+): RouterUsage | undefined {
+  const base = extractUsageFromMessages(messages);
+  if (base.totalTokens === 0) return undefined;
+  return { ...base, shouldCompact };
 }
 
 // --- Main routing function ---
@@ -428,7 +424,7 @@ export async function routeQuery(
 
   await router.prompt(prompt);
 
-  const usage = extractUsage(router.state.messages, shouldCompact);
+  const usage = buildRouterUsage(router.state.messages, shouldCompact);
 
   if (state.capturedRoute) {
     return { route: state.capturedRoute, usage };
@@ -436,10 +432,15 @@ export async function routeQuery(
 
   // Agents were called via callAgentAndObserve but router didn't call respondDirectly
   if (state.agentCallResults.length > 0) {
-    const synthesis = state.agentCallResults
-      .map((r) => r.result)
-      .join("\n\n");
-    return { route: { mode: "direct", content: synthesis }, usage };
+    const synthesis = state.agentCallResults.map((r) => r.result).join("\n\n");
+    return {
+      route: {
+        mode: "observe",
+        content: synthesis,
+        agentNames: [...new Set(state.agentCallResults.map((r) => r.agentName))],
+      },
+      usage,
+    };
   }
 
   // Retry: router didn't call any tool — nudge it once
@@ -451,18 +452,20 @@ export async function routeQuery(
     "You did not call any tool. You MUST call one of your tools (respondDirectly, dispatchToAgent, planMultiStep, or callAgentAndObserve) to handle the user's request. Analyze the query and call the appropriate tool now."
   );
 
-  const retryUsage = extractUsage(router.state.messages, shouldCompact);
+  const retryUsage = buildRouterUsage(router.state.messages, shouldCompact);
 
   if (state.capturedRoute) {
     return { route: state.capturedRoute, usage: retryUsage ?? usage };
   }
 
   if (state.agentCallResults.length > 0) {
-    const synthesis = state.agentCallResults
-      .map((r) => r.result)
-      .join("\n\n");
+    const synthesis = state.agentCallResults.map((r) => r.result).join("\n\n");
     return {
-      route: { mode: "direct", content: synthesis },
+      route: {
+        mode: "observe",
+        content: synthesis,
+        agentNames: [...new Set(state.agentCallResults.map((r) => r.agentName))],
+      },
       usage: retryUsage ?? usage,
     };
   }

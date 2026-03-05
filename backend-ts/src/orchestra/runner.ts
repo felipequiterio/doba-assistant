@@ -9,6 +9,7 @@ import {
   addUsage,
   extractUsageFromMessages,
 } from "./usage";
+import { bridgeAgentEvent, runAgentWithGuards } from "./event-bridge";
 
 export interface StepResult {
   stepIndex: number;
@@ -22,72 +23,8 @@ export interface StepResult {
 export interface PlanResult {
   results: StepResult[];
   usage: CallUsage;
-}
-
-function extractFinalAnswer(messages: any[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === "assistant" && Array.isArray(msg.content)) {
-      const textParts = msg.content
-        .filter((c: any) => c.type === "text")
-        .map((c: any) => c.text);
-      if (textParts.length > 0) {
-        return textParts.join("\n");
-      }
-    }
-  }
-  return "Task completed but no text response was produced.";
-}
-
-function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
-  switch (event.type) {
-    case "tool_execution_start":
-      eventBus.emit(EventType.TOOL_SELECTION, agentName, {
-        tool: event.toolName,
-        args: event.args,
-      });
-      eventBus.emit(EventType.TOOL_START, agentName, {
-        tool: event.toolName,
-        args: event.args,
-      });
-      break;
-
-    case "tool_execution_end":
-      if (event.isError) {
-        eventBus.emit(EventType.TOOL_ERROR, agentName, {
-          tool: event.toolName,
-          error: event.result,
-        });
-      } else {
-        eventBus.emit(EventType.TOOL_END, agentName, {
-          tool: event.toolName,
-          result: event.result,
-        });
-      }
-      break;
-
-    case "turn_end": {
-      const msg = event.message as any;
-      const toolCalls = Array.isArray(msg.content)
-        ? msg.content
-            .filter((c: any) => c.type === "toolCall")
-            .map((c: any) => c.name)
-        : [];
-      eventBus.emit(EventType.LLM_CALL, agentName, {
-        model: msg.model ?? "unknown",
-        provider: msg.provider ?? "unknown",
-        input: msg.usage?.input ?? 0,
-        output: msg.usage?.output ?? 0,
-        cache_read: msg.usage?.cacheRead ?? 0,
-        cost: msg.usage?.cost?.total ?? 0,
-        tool_calls: toolCalls,
-      });
-      break;
-    }
-
-    default:
-      break;
-  }
+  /** True if any step in the plan requested thinking_level != "off". */
+  usedThinking: boolean;
 }
 
 async function executeStep(
@@ -128,7 +65,8 @@ async function executeStep(
     expected_output: step.expected_output,
   });
 
-  const agent = definition.createAgent(cache);
+  const thinkingLevel = step.thinking_level ?? "off";
+  const agent = definition.createAgent(cache, thinkingLevel);
   const unsub = agent.subscribe((event: AgentEvent) => {
     bridgeAgentEvent(event, step.agent_name);
   });
@@ -138,7 +76,8 @@ async function executeStep(
       task: enrichedTask,
     });
 
-    await agent.prompt(enrichedTask);
+    await runAgentWithGuards(agent, enrichedTask, step.agent_name);
+
     const result = extractFinalAnswer(agent.state.messages);
     const usage = extractUsageFromMessages(agent.state.messages);
 
@@ -169,6 +108,19 @@ async function executeStep(
   }
 }
 
+function extractFinalAnswer(messages: any[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      const textParts = msg.content
+        .filter((c: any) => c.type === "text")
+        .map((c: any) => c.text);
+      if (textParts.length > 0) return textParts.join("\n");
+    }
+  }
+  return "Task completed but no text response was produced.";
+}
+
 /**
  * Dispatches a list of plan steps to their respective agents.
  * Sequential steps run in order; steps with is_async=true are batched
@@ -194,21 +146,25 @@ export async function runPlan(steps: PlanStep[]): Promise<PlanResult> {
           asyncBatch.map(({ step, index }) => executeStep(step, index, cache))
         );
 
+        // Track batch index explicitly so rejected entries map to the correct step.
+        // The previous code used `asyncBatch[results.length - ...]` which always
+        // resolved to asyncBatch[0] due to the cancelling arithmetic.
+        let batchIdx = 0;
         for (const outcome of settled) {
           if (outcome.status === "fulfilled") {
             results.push(outcome.value);
           } else {
-            const batch =
-              asyncBatch[results.length - (results.length - asyncBatch.length)];
+            const failedEntry = asyncBatch[batchIdx];
             results.push({
-              stepIndex: batch?.index ?? -1,
-              agentName: batch?.step.agent_name ?? "unknown",
-              task: batch?.step.task ?? "",
+              stepIndex: failedEntry?.index ?? -1,
+              agentName: failedEntry?.step.agent_name ?? "unknown",
+              task: failedEntry?.step.task ?? "",
               result: `Error: ${outcome.reason}`,
               success: false,
               usage: zeroUsage(),
             });
           }
+          batchIdx++;
         }
       } else {
         const result = await executeStep(steps[i], i, cache, results);
@@ -227,5 +183,9 @@ export async function runPlan(steps: PlanStep[]): Promise<PlanResult> {
     zeroUsage()
   );
 
-  return { results, usage };
+  const usedThinking = steps.some(
+    (s) => s.thinking_level && s.thinking_level !== "off"
+  );
+
+  return { results, usage, usedThinking };
 }
