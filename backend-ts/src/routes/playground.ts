@@ -383,6 +383,17 @@ playgroundApp.get("/playground", (c) => {
             margin-top: 4px;
           }
 
+          /* Streaming cursor */
+          .streaming-cursor::after {
+            content: "▊";
+            color: var(--accent);
+            animation: blink-cursor 0.6s step-end infinite;
+            margin-left: 1px;
+          }
+          @keyframes blink-cursor {
+            50% { opacity: 0; }
+          }
+
           /* Empty state */
           .chat-empty {
             flex: 1;
@@ -479,6 +490,7 @@ playgroundApp.get("/playground", (c) => {
           .filter-chip.active[data-group="agent"] { color: var(--info); background: var(--info-muted); }
           .filter-chip.active[data-group="tool"] { color: var(--tool); background: var(--tool-muted); }
           .filter-chip.active[data-group="error"] { color: var(--error); background: var(--error-muted); }
+          .filter-chip.active[data-group="stream"] { color: var(--accent); background: var(--accent-muted); }
           .filter-chip.active[data-group="meta"] { color: var(--text-3); background: var(--bg-3); }
           .filter-sep {
             width: 1px;
@@ -586,6 +598,7 @@ playgroundApp.get("/playground", (c) => {
           .badge-task_start, .badge-task_complete { background: var(--accent-muted); color: var(--accent); }
           .badge-tool_selection { background: var(--warning-muted); color: var(--warning); }
           .badge-tool_start, .badge-tool_end { background: var(--tool-muted); color: var(--tool); }
+          .badge-text_delta, .badge-thinking_delta, .badge-text_done, .badge-thinking_done { background: var(--accent-muted); color: var(--accent); }
           .badge-tool_error, .badge-task_error { background: var(--error-muted); color: var(--error); }
           .badge-connected, .badge-chat_info, .badge-log { background: var(--bg-3); color: var(--text-3); }
           .badge-error { background: var(--error-muted); color: var(--error); }
@@ -760,6 +773,7 @@ playgroundApp.get("/playground", (c) => {
               <button class="filter-chip active" data-group="task" data-types="task_generation_start,task_generation_end,task_start,task_complete">tasks</button>
               <button class="filter-chip active" data-group="agent" data-types="agent_start,agent_end">agents</button>
               <button class="filter-chip active" data-group="tool" data-types="tool_selection,tool_start,tool_end">tools</button>
+              <button class="filter-chip" data-group="stream" data-types="text_delta,thinking_delta,text_done,thinking_done">stream</button>
               <div class="filter-sep"></div>
               <button class="filter-chip active" data-group="error" data-types="tool_error,task_error,error">errors</button>
               <button class="filter-chip active" data-group="meta" data-types="connected,chat_info,log,retry">meta</button>
@@ -831,7 +845,7 @@ playgroundApp.get("/playground", (c) => {
           let cumulativeCost = 0;
           const CONTEXT_WINDOW = ${contextWindow};
 
-          var hiddenTypes = {};
+          var hiddenTypes = { text_delta: true, thinking_delta: true, text_done: true, thinking_done: true };
           var startTimes = {};
           var ICONS = {
             orchestra_start: "▶", orchestra_end: "■",
@@ -840,6 +854,7 @@ playgroundApp.get("/playground", (c) => {
             agent_start: "⚙", agent_end: "✓",
             tool_selection: "☞", tool_start: "→", tool_end: "←",
             tool_error: "✗", task_error: "✗", error: "✗",
+            text_delta: "↓", thinking_delta: "↓", text_done: "◆", thinking_done: "◆",
             connected: "◉", chat_info: "ℹ", log: "·", retry: "↻"
           };
           var DEPTH_MAP = {
@@ -848,6 +863,7 @@ playgroundApp.get("/playground", (c) => {
             task_start: 1, task_complete: 1, task_error: 1,
             agent_start: 2, agent_end: 2,
             tool_selection: 3, tool_start: 3, tool_end: 3, tool_error: 3,
+            text_delta: 2, thinking_delta: 2, text_done: 2, thinking_done: 2,
             connected: 0, chat_info: 0, log: 1, error: 0, retry: 2
           };
           var PAIR_MAP = {
@@ -888,6 +904,106 @@ playgroundApp.get("/playground", (c) => {
             };
           }
 
+          function createStreamingBubble(role) {
+            if (chatEmpty) chatEmpty.style.display = "none";
+            removeTyping();
+
+            var row = document.createElement("div");
+            row.className = "msg-row " + role;
+
+            var av = document.createElement("div");
+            av.className = "msg-avatar";
+            av.textContent = AVATARS[role] || "?";
+            row.appendChild(av);
+
+            var body = document.createElement("div");
+            body.className = "msg-body";
+
+            var header = document.createElement("div");
+            header.className = "msg-header";
+            var nameEl = document.createElement("span");
+            nameEl.className = "msg-name";
+            nameEl.textContent = role === "thinking" ? "thinking" : "doba";
+            header.appendChild(nameEl);
+            var tsEl = document.createElement("span");
+            tsEl.className = "msg-ts";
+            var now = new Date();
+            tsEl.textContent = now.toLocaleTimeString("en-US", { hour12: false }) + ":" + String(now.getMilliseconds()).padStart(3, "0");
+            header.appendChild(tsEl);
+            body.appendChild(header);
+
+            var bubble = document.createElement("div");
+            bubble.className = "msg-bubble";
+
+            if (role === "thinking") {
+              var toggle = document.createElement("div");
+              toggle.className = "think-toggle open";
+              toggle.innerHTML = '<span class="arrow">▸</span> reasoning';
+              var content = document.createElement("div");
+              content.className = "think-content open streaming-cursor";
+              content.style.whiteSpace = "pre-wrap";
+              toggle.addEventListener("click", function() {
+                toggle.classList.toggle("open");
+                content.classList.toggle("open");
+              });
+              bubble.appendChild(toggle);
+              bubble.appendChild(content);
+              bubble._streamTarget = content;
+            } else {
+              var content = document.createElement("div");
+              content.className = "streaming-cursor";
+              content.style.whiteSpace = "pre-wrap";
+              bubble.appendChild(content);
+              bubble._streamTarget = content;
+            }
+
+            body.appendChild(bubble);
+            row.appendChild(body);
+            chat.appendChild(row);
+            chat.scrollTop = chat.scrollHeight;
+            return { row: row, bubble: bubble, body: body };
+          }
+
+          function finalizeStreamingBubble(bubble, rawText, role, opts) {
+            opts = opts || {};
+            if (!bubble) return;
+            var target = bubble._streamTarget || bubble;
+            target.classList.remove("streaming-cursor");
+            if (role === "thinking") {
+              target.textContent = rawText;
+            } else {
+              bubble.innerHTML = renderMarkdown(rawText);
+            }
+
+            if (role === "assistant") {
+              var body = bubble.parentElement;
+              if (body) {
+                var actions = document.createElement("div");
+                actions.className = "msg-actions";
+                var copyBtn = document.createElement("button");
+                copyBtn.className = "msg-action-btn";
+                copyBtn.textContent = "copy";
+                copyBtn.addEventListener("click", function() {
+                  navigator.clipboard.writeText(rawText).then(function() {
+                    copyBtn.textContent = "copied!";
+                    copyBtn.classList.add("copied");
+                    setTimeout(function() { copyBtn.textContent = "copy"; copyBtn.classList.remove("copied"); }, 1500);
+                  });
+                });
+                actions.appendChild(copyBtn);
+                body.appendChild(actions);
+
+                if (opts.responseTime) {
+                  var rtEl = document.createElement("div");
+                  rtEl.className = "msg-response-time";
+                  rtEl.textContent = opts.responseTime >= 1000 ? (opts.responseTime / 1000).toFixed(1) + "s" : opts.responseTime + "ms";
+                  body.appendChild(rtEl);
+                }
+              }
+            }
+            chat.scrollTop = chat.scrollHeight;
+          }
+
           function handleEvent(data) {
             if (data.type === "chat_info" && data.data?.chat_id) {
               currentChatId = data.data.chat_id;
@@ -905,22 +1021,86 @@ playgroundApp.get("/playground", (c) => {
               else if (mode === "single") modeText.className = "footer-value active";
               else if (mode === "observe") modeText.className = "footer-value info";
               else modeText.className = "footer-value warn";
+            } else if (data.type === "text_delta" && data.data?.delta) {
+              if (!streamingBubble) {
+                var s = createStreamingBubble("assistant");
+                streamingBubble = s.bubble;
+                streamingRow = s.row;
+                answerRow = s.row;
+                streamingText = "";
+              }
+              didStream = true;
+              streamingText += data.data.delta;
+              var target = streamingBubble._streamTarget || streamingBubble;
+              target.textContent = streamingText;
+              chat.scrollTop = chat.scrollHeight;
+            } else if (data.type === "thinking_delta" && data.data?.delta) {
+              if (!thinkingBubble) {
+                var s = createStreamingBubble("thinking");
+                if (answerRow && answerRow.parentNode) {
+                  chat.insertBefore(s.row, answerRow);
+                }
+                thinkingBubble = s.bubble;
+                thinkingText = "";
+              }
+              thinkingText += data.data.delta;
+              var target = thinkingBubble._streamTarget || thinkingBubble;
+              target.textContent = thinkingText;
+              chat.scrollTop = chat.scrollHeight;
+            } else if (data.type === "thinking_done") {
+              if (thinkingBubble) {
+                finalizeStreamingBubble(thinkingBubble, thinkingText, "thinking");
+                thinkingBubble = null;
+                thinkingText = "";
+              }
+            } else if (data.type === "text_done") {
+              if (streamingBubble) {
+                finalizeStreamingBubble(streamingBubble, streamingText, "assistant");
+                streamingBubble = null;
+                streamingText = "";
+                streamingRow = null;
+              }
             } else if (data.type === "orchestra_end" && data.data?.final_answer) {
-              var answer = data.data.final_answer;
-              var thinkRe = new RegExp("<think>([\\\\s\\\\S]*?)</think>");
-              var stripRe = new RegExp("<think>[\\\\s\\\\S]*?</think>\\\\s*", "g");
-              var thinkMatch = answer.match(thinkRe);
-              var cleanAnswer = answer.replace(stripRe, "").trim();
-
               var elapsed = requestStartTime ? Date.now() - requestStartTime : null;
-              requestStartTime = null;
 
-              if (thinkMatch) {
-                addChat("thinking", thinkMatch[1].trim());
+              if (streamingBubble) {
+                finalizeStreamingBubble(streamingBubble, streamingText, "assistant", { responseTime: elapsed });
+                streamingBubble = null;
+                streamingText = "";
+                streamingRow = null;
               }
-              if (cleanAnswer) {
-                addChat("assistant", cleanAnswer, { responseTime: elapsed });
+              if (thinkingBubble) {
+                finalizeStreamingBubble(thinkingBubble, thinkingText, "thinking");
+                thinkingBubble = null;
+                thinkingText = "";
               }
+
+              if (!didStream) {
+                var answer = data.data.final_answer;
+                var thinkRe = new RegExp("<think>([\\\\s\\\\S]*?)</think>");
+                var stripRe = new RegExp("<think>[\\\\s\\\\S]*?</think>\\\\s*", "g");
+                var thinkMatch = answer.match(thinkRe);
+                var cleanAnswer = answer.replace(stripRe, "").trim();
+
+                if (thinkMatch) {
+                  addChat("thinking", thinkMatch[1].trim());
+                }
+                if (cleanAnswer) {
+                  addChat("assistant", cleanAnswer, { responseTime: elapsed });
+                }
+              } else if (elapsed) {
+                var lastBody = chat.querySelector(".msg-row.assistant:last-child .msg-body");
+                if (lastBody && !lastBody.querySelector(".msg-response-time")) {
+                  var rtEl = document.createElement("div");
+                  rtEl.className = "msg-response-time";
+                  rtEl.textContent = elapsed >= 1000 ? (elapsed / 1000).toFixed(1) + "s" : elapsed + "ms";
+                  lastBody.appendChild(rtEl);
+                }
+              }
+              didStream = false;
+              answerRow = null;
+              requestStartTime = null;
+              removeTyping();
               messageCount += 2;
 
               if (data.data.usage) {
@@ -959,6 +1139,14 @@ playgroundApp.get("/playground", (c) => {
 
           var requestStartTime = null;
           var typingEl = null;
+
+          var streamingBubble = null;
+          var streamingText = "";
+          var streamingRow = null;
+          var answerRow = null;
+          var thinkingBubble = null;
+          var thinkingText = "";
+          var didStream = false;
           var AVATARS = { user: "U", assistant: "D", thinking: "💭", system: "" };
           var BT = String.fromCharCode(96);
           var FENCE = BT + BT + BT;
@@ -1280,6 +1468,13 @@ playgroundApp.get("/playground", (c) => {
             cumulativeOutput = 0;
             cumulativeCost = 0;
             requestStartTime = null;
+            streamingBubble = null;
+            streamingText = "";
+            streamingRow = null;
+            answerRow = null;
+            thinkingBubble = null;
+            thinkingText = "";
+            didStream = false;
             removeTyping();
             chat.innerHTML = '<div class="chat-empty" id="chatEmpty"><div class="chat-empty-icon">⌘</div><div class="chat-empty-text">Send a message to start</div></div>';
             chatInfo.textContent = "no chat";

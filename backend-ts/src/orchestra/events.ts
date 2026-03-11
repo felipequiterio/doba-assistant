@@ -18,6 +18,14 @@ export const EventType = {
   TOOL_ERROR: "tool_error",
   /** Emitted after every LLM turn completes. Carries model, token usage, and tool calls made. */
   LLM_CALL: "llm_call",
+  /** Token-level streaming: carries { delta: string } for assistant text. */
+  TEXT_DELTA: "text_delta",
+  /** Token-level streaming: carries { delta: string } for thinking/reasoning text. */
+  THINKING_DELTA: "thinking_delta",
+  /** Signals end of a streaming text block so the frontend can finalize rendering. */
+  TEXT_DONE: "text_done",
+  /** Signals end of a streaming thinking block. */
+  THINKING_DONE: "thinking_done",
   RETRY: "retry",
   LOG: "log",
 } as const;
