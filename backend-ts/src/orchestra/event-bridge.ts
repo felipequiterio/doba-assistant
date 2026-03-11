@@ -47,6 +47,22 @@ export function bridgeAgentEvent(event: AgentEvent, agentName: string): void {
       }
       break;
 
+    case "message_update": {
+      const ame = (event as any).assistantMessageEvent;
+      if (ame?.type === "text_delta") {
+        eventBus.emit(EventType.TEXT_DELTA, agentName, { delta: ame.delta });
+      } else if (ame?.type === "thinking_delta") {
+        eventBus.emit(EventType.THINKING_DELTA, agentName, {
+          delta: ame.delta,
+        });
+      } else if (ame?.type === "thinking_end") {
+        eventBus.emit(EventType.THINKING_DONE, agentName, {});
+      } else if (ame?.type === "text_end") {
+        eventBus.emit(EventType.TEXT_DONE, agentName, {});
+      }
+      break;
+    }
+
     case "turn_end": {
       const msg = event.message as any;
       const toolCalls = Array.isArray(msg.content)
